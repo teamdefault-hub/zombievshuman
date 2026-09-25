@@ -473,6 +473,9 @@ const statIds = [
   { id: 'z-hp-max', obj: 'zombie', key: 'hpMax', isFloat: false },
   { id: 'z-atk-min', obj: 'zombie', key: 'atkMin', isFloat: false },
   { id: 'z-atk-max', obj: 'zombie', key: 'atkMax', isFloat: false },
+  { id: 'z-lunge-dist', obj: 'zombie', key: 'lungeDist', isFloat: true },
+  { id: 'z-lunge-spd', obj: 'zombie', key: 'lungeSpeedMult', isFloat: true },
+  { id: 'z-infect-time', obj: 'zombie', key: 'infectTime', isFloat: true },
   
   { id: 'c-spd-min', obj: 'civilian', key: 'speedMin', isFloat: true },
   { id: 'c-spd-max', obj: 'civilian', key: 'speedMax', isFloat: true },
@@ -794,7 +797,7 @@ function animate() {
                 if (h.biteTimer === undefined) h.biteTimer = 0;
                 h.biteTimer += dt;
                 h.isBeingBitten = true;
-                if (h.biteTimer >= 1.5 && !h.isTransforming) {
+                if (h.biteTimer >= CONFIG.stats.zombie.infectTime && !h.isTransforming) {
                     h.isTransforming = true;
                     h.transformTimer = 5.0; // 5 seconds
                     soundManager.playScream();
@@ -839,8 +842,8 @@ function animate() {
                 if (s.biteTimer === undefined) s.biteTimer = 0;
                 s.biteTimer += dt;
                 s.isBeingBitten = true;
-                if (s.biteTimer >= 1.5 && s.hp > 0) {
-                    s.hp = 0; // Kills soldier instantly after 1.5s bite
+                if (s.biteTimer >= CONFIG.stats.zombie.infectTime && s.hp > 0) {
+                    s.hp = 0; // Kills soldier instantly after infectTime bite
                 }
             } else {
                 s.isBeingBitten = false;

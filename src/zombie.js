@@ -84,7 +84,8 @@ export class Zombie {
 
     let isLunging = false;
     let isBiting = false;
-    if (closestTarget && closestDistSq < 64.0) { // Lunge radius (distance 8)
+    let lungeDistSq = CONFIG.stats.zombie.lungeDist * CONFIG.stats.zombie.lungeDist;
+    if (closestTarget && closestDistSq < lungeDistSq) {
         isLunging = true;
         if (closestDistSq < 2.25) { // Bite distance (1.5)
             isBiting = true;
@@ -145,7 +146,7 @@ export class Zombie {
   }
 
   move(dir, dt, grid, isLunging = false) {
-    let currentSpeed = this.speed * (isLunging ? 3.0 : 1.0); // 3x speed when lunging
+    let currentSpeed = this.speed * (isLunging ? CONFIG.stats.zombie.lungeSpeedMult : 1.0);
     let nextPos = this.mesh.position.clone().add(dir.clone().multiplyScalar(currentSpeed * dt));
     
     let halfSize = (CONFIG.mapSize / 2) - CONFIG.zombieRadius;

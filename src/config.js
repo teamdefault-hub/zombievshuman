@@ -13,9 +13,9 @@ export const CONFIG = {
     soldier: 0x4CAF50
   },
   stats: {
-    zombie: { speedMin: 2.0, speedMax: 10.0, hpMin: 50, hpMax: 150, atkMin: 10, atkMax: 30 },
-    civilian: { speedMin: 2.0, speedMax: 4.0, hpMin: 20, hpMax: 50 },
-    soldier: { speedMin: 2.0, speedMax: 4.0, hpMin: 50, hpMax: 80, atkMin: 20, atkMax: 50 }
+    zombie: { speedMin: 3.0, speedMax: 7.0, hpMin: 50, hpMax: 150, atkMin: 10, atkMax: 30, lungeDist: 5.0, lungeSpeedMult: 3.0, infectTime: 1.8 },
+    civilian: { speedMin: 3.0, speedMax: 7.0, hpMin: 20, hpMax: 50 },
+    soldier: { speedMin: 5.0, speedMax: 8.0, hpMin: 100, hpMax: 200, atkMin: 20, atkMax: 60 }
   },
   buildings: []
 };
