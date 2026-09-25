@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>좀비 군단 이동 실험장</title>
+    <script type="module" crossorigin src="/zombievshuman/assets/index-DmcG3Dcg.js"></script>
+    <link rel="stylesheet" crossorigin href="/zombievshuman/assets/index-BDFuh9xd.css">
+  </head>
+  <body>
+    <canvas id="hud-canvas" style="position: absolute; top: 0; left: 0; pointer-events: none; z-index: 50; width: 100%; height: 100%;"></canvas>
+    <button id="btn-toggle-ui" class="toggle-btn">◀ 패널 접기</button>
+    <div id="persistent-hud" style="position: absolute; top: 10px; left: 10px; pointer-events: none; z-index: 60; color: white; text-shadow: 1px 1px 2px black;">
+      <div id="countdown-display" style="position: fixed; top: 20px; left: 50%; transform: translateX(-50%); font-size: 24px; transition: all 0.3s;">군대 진입 대기 중...</div>
+      <div style="background: rgba(0,0,0,0.5); padding: 10px; border-radius: 5px;">
+        <h3 style="margin: 0 0 10px 0;">전황 정보</h3>
+        <p style="margin: 2px 0;"><span style="color:#ff4444">좀비: <span id="hud-zombie-count">0</span></span> | <span style="color:#44aaff">민간인: <span id="hud-human-count">0</span></span> | <span style="color:#44ff44">군인: <span id="hud-soldier-count">0</span></span></p>
+        <p style="margin: 2px 0;">플레이 시간: <span id="play-time-display">00:00</span></p>
+        <p style="margin: 2px 0; color: #ccc; font-size: 0.9em;">FPS: <span id="fps-display">0</span> | 입력: <span id="input-display">(0, 0)</span></p>
+        <p style="margin: 2px 0; color: #ffeb3b; font-weight: bold; font-size: 0.9em;">카메라: <span id="camera-mode">자동 추적</span></p>
+      </div>
+      <div style="background: rgba(0,0,0,0.5); padding: 10px; border-radius: 5px; margin-top: 10px;">
+        <p style="margin: 0 0 5px 0; font-weight: bold;">조작 안내</p>
+        <ul style="margin: 0; padding-left: 20px; font-size: 0.9em; line-height: 1.4;">
+          <li>방향키: 전진 방향 전환 / Space: 정지</li>
+          <li>휠: 줌 인/아웃 / 휠클릭+드래그: 화면 이동</li>
+          <li>F: 군단 복귀 / Tab(유지): 전체 보기</li>
+        </ul>
+      </div>
+    </div>
+    
+    <div id="ui-layer" style="right: 0; left: auto; max-width: 340px;">
+      <div class="panel" id="main-panel" style="pointer-events: auto;">
+        <h1 style="margin-top:0;">게임 설정</h1>
+        <div style="display: flex; gap: 5px; margin-bottom: 10px;">
+          <button id="btn-restart-game" style="flex:1; background: #E91E63; font-weight: bold;" title="좀비 1마리, 시간/병력 초기화">게임 새로 시작</button>
+          <button id="btn-reset-exp" style="flex:1; background: #2196F3;" title="선택된 좀비 수 유지, 시간/병력 초기화">실험 리셋</button>
+        </div>
+        <p style="margin:5px 0;">좀비 수 선택:</p>
+        <div class="button-group">
+          <button id="btn-count-1">1마리</button>
+          <button id="btn-count-10">10마리</button>
+          <button id="btn-count-40">40마리</button>
+        </div>
+        <p><label><input type="checkbox" id="chk-debug"> 경로·충돌 영역 표시</label></p>
+        
+        <hr/>
+        <div class="slider-group">
+          <p style="margin:0 0 5px 0; font-weight:bold;">카메라 설정</p>
+          <label title="기본적으로 화면이 얼마나 확대/축소될지 결정합니다.">기본 확대 정도: <span id="val-cam-dist">2.3</span></label>
+          <input type="range" id="sl-cam-dist" min="0.5" max="3.0" step="0.1" value="2.3">
+          
+          <label title="0에 가까울수록 측면, 1에 가까울수록 수직(탑 뷰)입니다.">시점 높이 (탑 뷰): <span id="val-cam-angle">0.6</span></label>
+          <input type="range" id="sl-cam-angle" min="0.0" max="1.0" step="0.1" value="0.6">
+
+          <label title="값이 높을수록 카메라가 군단을 더 빠르고 덜 부드럽게 쫓아갑니다.">추적 부드러움: <span id="val-cam-speed-follow">1</span></label>
+          <input type="range" id="sl-cam-speed-follow" min="1" max="10" step="1" value="1">
+          
+          <label title="드래그 시 화면 이동 속도입니다. 값을 직접 입력할 수 있습니다.">드래그 이동 속도: </label>
+          <input type="number" id="inp-cam-drag-speed" min="0.01" max="10.0" step="0.01" value="3" style="width: 100%; padding: 4px; box-sizing: border-box; background: #333; color: #fff; border: 1px solid #555; margin-bottom: 5px;">
+          
+          <label style="display:flex; align-items:center; gap:5px;"><input type="checkbox" id="chk-cam-auto-zoom" checked> 자동 줌 켜기 (군단 산개 시)</label>
+          <button id="btn-cam-reset" style="margin-top:5px; width:100%;">카메라 기본값 복원</button>
+        </div>
+
+        <details style="margin-top: 10px;">
+          <summary>고급 설정 (세부 계산·맵 생성)</summary>
+          <div class="slider-group" style="margin-top: 5px;">
+            <label>카메라 거리 한계: <span id="val-cam-max">100</span></label>
+            <input type="range" id="sl-cam-max" min="30" max="300" step="10" value="100">
+            
+            <label>자동 줌 반응속도: <span id="val-cam-speed-zoom">5</span></label>
+            <input type="range" id="sl-cam-speed-zoom" min="1" max="10" step="1" value="5">
+            
+            <hr/>
+            <p style="margin:5px 0;"><strong>맵 설정</strong></p>
+            <label>건물 양 (개수): <span id="val-bldg-amount">89</span></label>
+          <input type="range" id="sl-bldg-amount" min="0" max="100" step="1" value="89">
+          
+          <label>건물 밀도 (분포 반경): <span id="val-bldg-density">1.0</span></label>
+          <input type="range" id="sl-bldg-density" min="0.2" max="1.0" step="0.1" value="1.0">
+          
+          <label>건물 평균 높이: <span id="val-bldg-height">6</span></label>
+          <input type="range" id="sl-bldg-height" min="2" max="30" step="1" value="6">
+          
+          <label>건물 크기 다양도: <span id="val-bldg-var">0.8</span></label>
+          <input type="range" id="sl-bldg-var" min="0.0" max="1.0" step="0.1" value="0.8">
+          
+          <label>건물 회전 무작위도: <span id="val-bldg-rot">0.0</span></label>
+          <input type="range" id="sl-bldg-rot" min="0.0" max="1.0" step="0.1" value="0.0">
+          
+          <label>충돌 영역 (여백): <span id="val-col-margin">0.1</span></label>
+          <input type="range" id="sl-col-margin" min="0.0" max="2.0" step="0.1" value="0.1">
+          
+          <div style="display: flex; gap: 5px; margin-top: 10px;">
+            <button id="btn-apply-map" style="flex:1;">맵 재생성</button>
+            <button id="btn-save-settings" style="flex:1;">전체 설정 저장</button>
+          </div>
+          </div>
+        </details>
+
+        <hr/>
+        <p><strong>스폰 설정</strong></p>
+        <div class="slider-group">
+          <label>초기 민간인 수: </label>
+          <input type="number" id="inp-civ-count" min="0" max="2000" step="1" value="1200" style="width: 100%; padding: 4px; box-sizing: border-box; background: #333; color: #fff; border: 1px solid #555;">
+          
+          <label>군인 분대원 수: </label>
+          <input type="number" id="inp-sol-count" min="0" max="50" step="1" value="12" style="width: 100%; padding: 4px; box-sizing: border-box; background: #333; color: #fff; border: 1px solid #555;">
+          
+          <label>군인 투입 주기(초): </label>
+          <input type="number" id="inp-sol-interval" min="1" max="120" step="1" value="20" style="width: 100%; padding: 4px; box-sizing: border-box; background: #333; color: #fff; border: 1px solid #555;">
+        </div>
+
+        <hr/>
+        <p><strong>스탯 설정</strong></p>
+        <details>
+          <summary>좀비 스탯</summary>
+          <div class="slider-group">
+            <label>최소 속도: <span id="val-z-spd-min">2.0</span></label><input type="range" id="sl-z-spd-min" min="1" max="30" step="0.5" value="2.0">
+            <label>최대 속도: <span id="val-z-spd-max">10.0</span></label><input type="range" id="sl-z-spd-max" min="1" max="30" step="0.5" value="10.0">
+            
+            <label>최소 체력: <span id="val-z-hp-min">50</span></label><input type="range" id="sl-z-hp-min" min="10" max="500" step="10" value="50">
+            <label>최대 체력: <span id="val-z-hp-max">150</span></label><input type="range" id="sl-z-hp-max" min="10" max="500" step="10" value="150">
+            
+            <label>최소 공격력: <span id="val-z-atk-min">10</span></label><input type="range" id="sl-z-atk-min" min="1" max="100" step="1" value="10">
+            <label>최대 공격력: <span id="val-z-atk-max">30</span></label><input type="range" id="sl-z-atk-max" min="1" max="100" step="1" value="30">
+          </div>
+        </details>
+
+        <details>
+          <summary>민간인 스탯</summary>
+          <div class="slider-group">
+            <label>최소 속도: <span id="val-c-spd-min">2.0</span></label><input type="range" id="sl-c-spd-min" min="1" max="30" step="0.5" value="2.0">
+            <label>최대 속도: <span id="val-c-spd-max">4.0</span></label><input type="range" id="sl-c-spd-max" min="1" max="30" step="0.5" value="4.0">
+            
+            <label>최소 체력: <span id="val-c-hp-min">20</span></label><input type="range" id="sl-c-hp-min" min="10" max="200" step="5" value="20">
+            <label>최대 체력: <span id="val-c-hp-max">50</span></label><input type="range" id="sl-c-hp-max" min="10" max="200" step="5" value="50">
+          </div>
+        </details>
+
+        <details>
+          <summary>군인 스탯</summary>
+          <div class="slider-group">
+            <label>최소 속도: <span id="val-s-spd-min">2.0</span></label><input type="range" id="sl-s-spd-min" min="1" max="30" step="0.5" value="2.0">
+            <label>최대 속도: <span id="val-s-spd-max">4.0</span></label><input type="range" id="sl-s-spd-max" min="1" max="30" step="0.5" value="4.0">
+            
+            <label>최소 체력: <span id="val-s-hp-min">50</span></label><input type="range" id="sl-s-hp-min" min="10" max="500" step="10" value="50">
+            <label>최대 체력: <span id="val-s-hp-max">80</span></label><input type="range" id="sl-s-hp-max" min="10" max="500" step="10" value="80">
+            
+            <label>최소 공격력: <span id="val-s-atk-min">20</span></label><input type="range" id="sl-s-atk-min" min="5" max="200" step="5" value="20">
+            <label>최대 공격력: <span id="val-s-atk-max">50</span></label><input type="range" id="sl-s-atk-max" min="5" max="200" step="5" value="50">
+          </div>
+        </details>
+
+        <div id="stats" style="display:none;">
+        </div>
+      </div>
+    </div>
+    
+    <div id="flare-ui" style="position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%); width: 80px; height: 80px; background: rgba(0,0,0,0.7); border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; border: 3px solid #666; pointer-events: auto; user-select: none; z-index: 100; transition: border-color 0.3s, transform 0.1s;">
+      <div id="flare-progress" style="position: absolute; bottom: 0; left: 0; width: 100%; height: 0%; background: rgba(255, 87, 34, 0.5); border-radius: 50%; z-index: 1; pointer-events: none; transition: height 0.2s;"></div>
+      <span style="color: white; font-size: 24px; z-index: 2; pointer-events: none;">📍</span>
+      <span id="flare-text" style="color: white; font-size: 11px; font-weight: bold; z-index: 2; pointer-events: none; margin-top: 2px;">충전중</span>
+    </div>
+
+    <div id="minimap-container">
+      <div class="minimap-stats">
+        <span style="color:#FF0000">좀비: <span id="minimap-zombies">0</span></span> | 
+        <span style="color:#87CEEB">민간인: <span id="minimap-humans">0</span></span> |
+        <span style="color:#4CAF50">군인: <span id="minimap-soldiers">0</span></span>
+      </div>
+      <canvas id="minimap" width="200" height="200"></canvas>
+    </div>
+    
+  </body>
+</html>
