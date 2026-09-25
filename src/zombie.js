@@ -24,7 +24,7 @@ export class Zombie {
     this.lastInputDirection = new THREE.Vector3();
   }
 
-  update(dt, inputDir, grid, allZombies, debug, isStopped, flarePos = null) {
+  update(dt, inputDir, grid, allZombies, debug, isStopped, flarePos = null, humans = [], soldiers = []) {
     let moveDir = new THREE.Vector3(inputDir.x, 0, inputDir.z);
     let isFlareActive = (flarePos !== null);
     
@@ -69,6 +69,50 @@ export class Zombie {
         sepForce.divideScalar(count).multiplyScalar(2.0); // weak separation
     }
 
+    let closestTarget = null;
+    let closestDistSq = Infinity;
+    
+    for (let h of humans) {
+        if (h.isTransforming) continue;
+        let d = pos.distanceToSquared(h.mesh.position);
+        if (d < closestDistSq) { closestDistSq = d; closestTarget = h; }
+    }
+    for (let s of soldiers) {
+        let d = pos.distanceToSquared(s.mesh.position);
+        if (d < closestDistSq) { closestDistSq = d; closestTarget = s; }
+    }
+
+    let isLunging = false;
+    let isBiting = false;
+    if (closestTarget && closestDistSq < 64.0) { // Lunge radius (distance 8)
+        isLunging = true;
+        if (closestDistSq < 2.25) { // Bite distance (1.5)
+            isBiting = true;
+        }
+    }
+
+    if (isBiting) {
+        // Stop moving, face the target
+        let lookTarget = closestTarget.mesh.position.clone();
+        lookTarget.y = this.mesh.position.y;
+        this.mesh.lookAt(lookTarget);
+        this.updateDebugLine(false);
+        return;
+    }
+
+    if (isLunging) {
+        // Override path and move directly to target with increased speed
+        this.path = [];
+        moveDir.copy(closestTarget.mesh.position).sub(this.mesh.position);
+        moveDir.y = 0;
+        if (moveDir.lengthSq() > 0) moveDir.normalize();
+        
+        let finalDir = moveDir.clone().add(sepForce).normalize();
+        this.move(finalDir, dt, grid, isLunging);
+        this.updateDebugLine(false);
+        return;
+    }
+
     if (this.path.length > 0) {
         let target = new THREE.Vector3(this.path[0].x, pos.y, this.path[0].z);
         let dirToTarget = target.clone().sub(pos);
@@ -82,7 +126,7 @@ export class Zombie {
         } else {
             dirToTarget.normalize();
             dirToTarget.add(sepForce).normalize();
-            this.move(dirToTarget, dt, grid);
+            this.move(dirToTarget, dt, grid, false);
         }
     } else {
         let targetWorld = pos.clone().add(moveDir.clone().multiplyScalar(15));
@@ -93,15 +137,16 @@ export class Zombie {
         
         if (this.path.length === 0) {
             let finalDir = moveDir.clone().add(sepForce).normalize();
-            this.move(finalDir, dt, grid);
+            this.move(finalDir, dt, grid, false);
         }
     }
 
     this.updateDebugLine(debug);
   }
 
-  move(dir, dt, grid) {
-    let nextPos = this.mesh.position.clone().add(dir.clone().multiplyScalar(this.speed * dt));
+  move(dir, dt, grid, isLunging = false) {
+    let currentSpeed = this.speed * (isLunging ? 3.0 : 1.0); // 3x speed when lunging
+    let nextPos = this.mesh.position.clone().add(dir.clone().multiplyScalar(currentSpeed * dt));
     
     let halfSize = (CONFIG.mapSize / 2) - CONFIG.zombieRadius;
     nextPos.x = Math.max(-halfSize, Math.min(halfSize, nextPos.x));

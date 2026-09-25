@@ -778,7 +778,34 @@ function animate() {
     }
 
     if (!isSettingsOpen) {
-        humans.forEach(h => { h.update(dt, grid, zombies, humans); grid.pushOutCollision(h, dt); });
+        humans.forEach(h => { 
+            h.update(dt, grid, zombies, humans); 
+            grid.pushOutCollision(h, dt); 
+            
+            // Infection bite logic
+            let isBittenNow = false;
+            for(let z of zombies) {
+                if (z.hp > 0 && z.mesh.position.distanceToSquared(h.mesh.position) < 2.25) {
+                    isBittenNow = true;
+                    break;
+                }
+            }
+            if (isBittenNow) {
+                if (h.biteTimer === undefined) h.biteTimer = 0;
+                h.biteTimer += dt;
+                h.isBeingBitten = true;
+                if (h.biteTimer >= 1.5 && !h.isTransforming) {
+                    h.isTransforming = true;
+                    h.transformTimer = 5.0; // 5 seconds
+                    soundManager.playScream();
+                }
+            } else {
+                h.isBeingBitten = false;
+                if (h.biteTimer !== undefined && h.biteTimer > 0) {
+                    h.biteTimer -= dt * 0.5;
+                }
+            }
+        });
         
         // Handle civilian transformations
         for (let i = humans.length - 1; i >= 0; i--) {
@@ -796,8 +823,33 @@ function animate() {
             soundManager.playZombieGroan();
         }
 
-        soldiers.forEach(s => { s.update(dt, grid, zombies, soldiers); grid.pushOutCollision(s, dt); });
-        zombies.forEach(z => { z.update(dt, input.direction, grid, zombies, debugMode, input.isStopped, flareState === 'active' ? flarePos : null); grid.pushOutCollision(z, dt); });
+        soldiers.forEach(s => { 
+            s.update(dt, grid, zombies, soldiers); 
+            grid.pushOutCollision(s, dt); 
+            
+            // Soldier infection bite logic (instant kill after 1.5s of continuous biting)
+            let isBittenNow = false;
+            for(let z of zombies) {
+                if (z.hp > 0 && z.mesh.position.distanceToSquared(s.mesh.position) < 2.25) {
+                    isBittenNow = true;
+                    break;
+                }
+            }
+            if (isBittenNow) {
+                if (s.biteTimer === undefined) s.biteTimer = 0;
+                s.biteTimer += dt;
+                s.isBeingBitten = true;
+                if (s.biteTimer >= 1.5 && s.hp > 0) {
+                    s.hp = 0; // Kills soldier instantly after 1.5s bite
+                }
+            } else {
+                s.isBeingBitten = false;
+                if (s.biteTimer !== undefined && s.biteTimer > 0) {
+                    s.biteTimer -= dt * 0.5;
+                }
+            }
+        });
+        zombies.forEach(z => { z.update(dt, input.direction, grid, zombies, debugMode, input.isStopped, flareState === 'active' ? flarePos : null, humans, soldiers); grid.pushOutCollision(z, dt); });
 
     // Handle Interactions
     for (let i = zombies.length - 1; i >= 0; i--) {
@@ -809,15 +861,7 @@ function animate() {
             continue;
         }
 
-        // Zombie vs Human (Infection)
-        for (let j = humans.length - 1; j >= 0; j--) {
-            let h = humans[j];
-            if (!h.isTransforming && z.mesh.position.distanceToSquared(h.mesh.position) < 2.0) { // Touch distance
-                h.isTransforming = true;
-                h.transformTimer = 5.0; // 5 seconds
-                soundManager.playScream();
-            }
-        }
+        // Zombie vs Human (Instant infection removed - now handled via 1.5s bite timer above)
 
         // Zombie vs Soldier (Infection/Damage)
         for (let j = soldiers.length - 1; j >= 0; j--) {
@@ -957,8 +1001,8 @@ function animate() {
         targetHeight = cameraMaxHeight;
     }
     
-    // Offset camera target to account for UI panel on the right
-    let uiOffsetWorldX = (uiWidthForCamera / window.innerWidth) * 1.53 * targetHeight * camera.aspect;
+    // Center the camera exactly on the targets
+    let uiOffsetWorldX = 0;
     
     const baseZOffset = targetHeight * 0.7;
     const targetZOffset = baseZOffset * (1.0 - cameraAngleRatio);
@@ -967,32 +1011,15 @@ function animate() {
     camera.position.y = targetHeight;
     camera.position.z = finalCz + targetZOffset;
 
-    // --- Camera occlusion handling ---
+    // --- Camera occlusion handling (Disabled by request) ---
     if (gameMap.buildingMeshes && gameMap.buildingMeshes.length > 0) {
-        let camTarget = new THREE.Vector3(finalCx + uiOffsetWorldX, 0, finalCz);
-        let camPos = camera.position.clone();
-        let rayDir = camTarget.clone().sub(camPos).normalize();
-        let raycaster = new THREE.Raycaster(camPos, rayDir);
-        let distanceToTarget = camPos.distanceTo(camTarget);
-        
-        let intersects = raycaster.intersectObjects(gameMap.buildingMeshes, false);
-        
-        // Reset all building opacity first
+        // Reset any leftover building opacity just in case
         gameMap.buildingMeshes.forEach(mesh => {
             if (mesh.material.opacity !== 1.0) {
                 mesh.material.opacity = 1.0;
                 mesh.material.transparent = false;
             }
         });
-        
-        // Make intersected buildings transparent
-        for (let intersect of intersects) {
-            // Only affect buildings that are actually between camera and target
-            if (intersect.distance < distanceToTarget) {
-                intersect.object.material.transparent = true;
-                intersect.object.material.opacity = 0.2;
-            }
-        }
     }
 
     camera.lookAt(finalCx + uiOffsetWorldX, 0, finalCz);
@@ -1132,7 +1159,12 @@ window.addEventListener('mousemove', (e) => {
         lastMouseX = e.clientX;
         lastMouseY = e.clientY;
         
-        let panSpeed = cameraDragSpeed * (freeCamSpread / 30.0);
+        // Calculate pan speed based on the actual camera height to ensure consistent screen-to-world ratio
+        // We normalize by 100.0 as a baseline height for the drag speed multiplier
+        let baseRatio = camera.position.y / 100.0; 
+        if (baseRatio < 0.1) baseRatio = 0.1;
+        let panSpeed = cameraDragSpeed * baseRatio;
+        
         freeCamX -= dx * panSpeed;
         freeCamZ -= dy * panSpeed;
     }
@@ -1155,8 +1187,7 @@ function updateCameraFromMinimap(e) {
     let targetHeight = (30 + smoothedSpread * 2.5) * cameraDistanceMultiplier;
     if (targetHeight > cameraMaxHeight) targetHeight = cameraMaxHeight;
     
-    let uiWidthForCamera = isSettingsOpen ? 340 : 0;
-    let uiOffsetWorldX = (uiWidthForCamera / window.innerWidth) * 1.53 * targetHeight * camera.aspect;
+    let uiOffsetWorldX = 0;
     
     mappedX -= uiOffsetWorldX;
     
