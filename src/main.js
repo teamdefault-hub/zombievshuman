@@ -291,7 +291,7 @@ let cameraSpeedFollow = 0.0;
 let cameraSpeedZoom = 0.0;
 let cameraDragSpeed = 0.2;
 
-const savedSettings = localStorage.getItem('zombie_settings');
+const savedSettings = localStorage.getItem('zombie_settings_v2');
 if (savedSettings) {
     try {
         const s = JSON.parse(savedSettings);
@@ -525,7 +525,7 @@ document.getElementById('btn-save-settings').addEventListener('click', () => {
         spawnSolInterval: document.getElementById('inp-sol-interval').value,
         stats: CONFIG.stats
     };
-    localStorage.setItem('zombie_settings', JSON.stringify(s));
+    localStorage.setItem('zombie_settings_v2', JSON.stringify(s));
     alert('설정이 성공적으로 저장되었습니다!');
 });
 
