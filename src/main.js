@@ -5,6 +5,7 @@ import { Zombie } from './zombie.js';
 import { Human } from './human.js';
 import { Soldier } from './soldier.js';
 import { GameMap } from './map.js';
+import { Drone } from './drone.js';
 import { CONFIG, generateBuildings } from './config.js';
 import { soundManager } from './soundManager.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -13,7 +14,7 @@ import { OutlinePass } from 'three/addons/postprocessing/OutlinePass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 const canvas = document.createElement('canvas');
-document.body.appendChild(canvas);
+document.getElementById('game-container').appendChild(canvas);
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.shadowMap.enabled = true;
 
@@ -40,6 +41,7 @@ scene.add(dirLight);
 const input = new InputManager();
 const grid = new Grid();
 const gameMap = new GameMap(scene);
+let playerDrone = new Drone(scene);
 document.addEventListener('click', () => soundManager.init(), { once: true });
 
 
@@ -96,27 +98,23 @@ composer.addPass(outputPass);
 let uiWidthForCamera = 0;
 
 function resize() {
-    const isUiHidden = document.getElementById('ui-layer').classList.contains('hidden');
-    uiWidthForCamera = isUiHidden ? 0 : 340; // Approx 300px + padding + toggle btn
-    
-    let w = window.innerWidth;
     let h = window.innerHeight;
+    let w = h * (9 / 16);
+    
+    const gc = document.getElementById('game-container');
+    if (gc) {
+        gc.style.height = h + 'px';
+        gc.style.width = w + 'px';
+    }
 
     renderer.setSize(w, h);
     composer.setSize(w, h);
-    camera.aspect = w / h;
+    camera.aspect = 9 / 16;
     camera.updateProjectionMatrix();
 
     renderer.domElement.style.position = 'absolute';
     renderer.domElement.style.left = `0px`;
     renderer.domElement.style.top = `0px`;
-
-    const minimap = document.getElementById('minimap-container');
-    if (minimap) {
-        minimap.style.top = 'auto';
-        minimap.style.bottom = '20px';
-        minimap.style.right = `${uiWidthForCamera + 20}px`;
-    }
 }
 window.addEventListener('resize', resize);
 resize();
@@ -127,7 +125,7 @@ let soldiers = [];
 let nextSoldierSpawnTime = 20.0;
 let isFirstSolSpawn = true;
 let debugMode = false;
-let currentCount = 1;
+let currentCount = 100;
 
 window.getGameState = () => ({ 
     zombies: zombies.length, 
@@ -146,6 +144,12 @@ let savedCamState = null;
 let freeCamX = 0;
 let freeCamZ = 0;
 let freeCamSpread = 30;
+
+let droneCommand = {
+    type: 'WANDER', // 'STOP', 'GATHER', 'GATHER_ALL', 'ATTACK', 'WANDER'
+    position: null,
+    target: null
+};
 
 function getValidSpawnPoint(x, z) {
     let gNode = grid.worldToGrid(x, z);
@@ -258,7 +262,8 @@ function resetGame(count) {
 
 document.getElementById('btn-count-1').addEventListener('click', () => resetGame(1));
 document.getElementById('btn-count-10').addEventListener('click', () => resetGame(10));
-document.getElementById('btn-count-40').addEventListener('click', () => resetGame(40));
+document.getElementById('btn-count-50').addEventListener('click', () => resetGame(50));
+document.getElementById('btn-count-100').addEventListener('click', () => resetGame(100));
 // Old btn-reset removed here
 
 document.getElementById('chk-debug').addEventListener('change', (e) => {
@@ -270,26 +275,24 @@ const flareUI = document.getElementById('flare-ui');
 if (flareUI) {
     flareUI.addEventListener('click', (e) => {
         if (flareState === 'ready' || flareState === 'charging' && flareCharge >= 15) {
-            isAimingFlare = true;
-            document.body.style.cursor = 'crosshair';
-            flareUI.style.borderColor = '#ff3333';
+            flareState = 'active';
+            flareDuration = Math.min(Math.max(flareCharge / 15 * 3, 3), 10);
+            flareCharge = 0;
+            
+            droneCommand = { type: 'FLARE_ACTIVE', position: null, target: null };
+            
+            flareUI.style.borderColor = '#666';
         }
     });
 }
 
-window.addEventListener('resize', () => {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    composer.setSize(window.innerWidth, window.innerHeight);
-});
 
 let cameraDistanceMultiplier = 2.3;
 let cameraMaxHeight = 100;
 let cameraAngleRatio = 0.6;
 let cameraSpeedFollow = 0.0;
 let cameraSpeedZoom = 0.0;
-let cameraDragSpeed = 0.2;
+let droneMoveSpeed = 0.5;
 
 const savedSettings = localStorage.getItem('zombie_settings_v2');
 if (savedSettings) {
@@ -300,7 +303,7 @@ if (savedSettings) {
         if (s.camAngle !== undefined) document.getElementById('sl-cam-angle').value = s.camAngle;
         if (s.camSpeedFollow !== undefined) document.getElementById('sl-cam-speed-follow').value = s.camSpeedFollow;
         if (s.camSpeedZoom !== undefined) document.getElementById('sl-cam-speed-zoom').value = s.camSpeedZoom;
-        if (s.camDragSpeed !== undefined && document.getElementById('inp-cam-drag-speed')) document.getElementById('inp-cam-drag-speed').value = s.camDragSpeed;
+        if (s.droneMoveSpeed !== undefined && document.getElementById('sl-drone-speed')) document.getElementById('sl-drone-speed').value = s.droneMoveSpeed;
         if (s.bldgAmt !== undefined) document.getElementById('sl-bldg-amount').value = s.bldgAmt;
         if (s.bldgDen !== undefined) document.getElementById('sl-bldg-density').value = s.bldgDen;
         if (s.bldgHgt !== undefined) document.getElementById('sl-bldg-height').value = s.bldgHgt;
@@ -310,6 +313,20 @@ if (savedSettings) {
         if (s.spawnCivCount !== undefined) document.getElementById('inp-civ-count').value = s.spawnCivCount;
         if (s.spawnSolCount !== undefined) document.getElementById('inp-sol-count').value = s.spawnSolCount;
         if (s.spawnSolInterval !== undefined) document.getElementById('inp-sol-interval').value = s.spawnSolInterval;
+        if (s.currentCount !== undefined) currentCount = s.currentCount;
+        if (s.debugMode !== undefined) {
+            debugMode = s.debugMode;
+            let chk = document.getElementById('chk-debug');
+            if (chk) chk.checked = debugMode;
+        }
+        if (s.autoZoomEnabled !== undefined) {
+            let chk = document.getElementById('chk-cam-auto-zoom');
+            if (chk) {
+                chk.checked = s.autoZoomEnabled;
+                // autoZoomEnabled will be read from element later or we can set it now, 
+                // but since let autoZoomEnabled = ... is below, we just set the checkbox.
+            }
+        }
         if (s.stats) {
             Object.keys(s.stats).forEach(obj => {
                 if(CONFIG.stats[obj]) Object.assign(CONFIG.stats[obj], s.stats[obj]);
@@ -319,19 +336,6 @@ if (savedSettings) {
 }
 
 let isSettingsOpen = false;
-const toggleBtn = document.getElementById('btn-toggle-ui');
-const uiLayer = document.getElementById('ui-layer');
-toggleBtn.addEventListener('click', () => {
-    uiLayer.classList.toggle('hidden');
-    toggleBtn.classList.toggle('panel-hidden');
-    isSettingsOpen = !uiLayer.classList.contains('hidden');
-    if (isSettingsOpen) {
-        toggleBtn.textContent = '▶ 패널 접기';
-    } else {
-        toggleBtn.textContent = '◀ 패널 열기';
-    }
-    resize();
-});
 
 let playTime = 0;
 let isGameStarted = false;
@@ -348,7 +352,7 @@ document.getElementById('btn-restart-game').addEventListener('click', () => {
     let el = document.getElementById('camera-mode');
     if (el) el.textContent = '자동 추적';
     document.getElementById('btn-apply-map').click();
-    resetGame(1);
+    resetGame(100);
 });
 
 document.getElementById('btn-reset-exp').addEventListener('click', () => {
@@ -388,11 +392,11 @@ slCamAngle.addEventListener('input', (e) => {
 
 const slCamSpeedFollow = document.getElementById('sl-cam-speed-follow');
 const valCamSpeedFollow = document.getElementById('val-cam-speed-follow');
-cameraSpeedFollow = (parseInt(slCamSpeedFollow.value) - 5.5) / 4.5;
-valCamSpeedFollow.textContent = slCamSpeedFollow.value;
+cameraSpeedFollow = parseFloat(slCamSpeedFollow.value);
+valCamSpeedFollow.textContent = cameraSpeedFollow.toFixed(1);
 slCamSpeedFollow.addEventListener('input', (e) => {
-    cameraSpeedFollow = (parseInt(e.target.value) - 5.5) / 4.5;
-    valCamSpeedFollow.textContent = e.target.value;
+    cameraSpeedFollow = parseFloat(e.target.value);
+    valCamSpeedFollow.textContent = cameraSpeedFollow.toFixed(1);
 });
 
 const slCamSpeedZoom = document.getElementById('sl-cam-speed-zoom');
@@ -404,11 +408,15 @@ slCamSpeedZoom.addEventListener('input', (e) => {
     valCamSpeedZoom.textContent = e.target.value;
 });
 
-const inpCamDragSpeed = document.getElementById('inp-cam-drag-speed');
-if (inpCamDragSpeed) {
-    cameraDragSpeed = parseFloat(inpCamDragSpeed.value) || 0.2;
-    inpCamDragSpeed.addEventListener('input', (e) => {
-        cameraDragSpeed = parseFloat(e.target.value) || 0.2;
+
+const slDroneSpeed = document.getElementById('sl-drone-speed');
+const valDroneSpeed = document.getElementById('val-drone-speed');
+if (slDroneSpeed && valDroneSpeed) {
+    droneMoveSpeed = parseFloat(slDroneSpeed.value) || 0.5;
+    valDroneSpeed.textContent = droneMoveSpeed.toFixed(1);
+    slDroneSpeed.addEventListener('input', (e) => {
+        droneMoveSpeed = parseFloat(e.target.value) || 0.5;
+        valDroneSpeed.textContent = droneMoveSpeed.toFixed(1);
     });
 }
 
@@ -418,11 +426,11 @@ document.getElementById('chk-cam-auto-zoom').addEventListener('change', (e) => {
 });
 
 document.getElementById('btn-cam-reset').addEventListener('click', () => {
-    document.getElementById('sl-cam-dist').value = 2.3;
+    document.getElementById('sl-cam-dist').value = 1.0;
     document.getElementById('sl-cam-dist').dispatchEvent(new Event('input'));
     document.getElementById('sl-cam-angle').value = 0.6;
     document.getElementById('sl-cam-angle').dispatchEvent(new Event('input'));
-    document.getElementById('sl-cam-speed-follow').value = 1;
+    document.getElementById('sl-cam-speed-follow').value = 0.0;
     document.getElementById('sl-cam-speed-follow').dispatchEvent(new Event('input'));
     document.getElementById('chk-cam-auto-zoom').checked = true;
     document.getElementById('chk-cam-auto-zoom').dispatchEvent(new Event('change'));
@@ -435,6 +443,11 @@ document.getElementById('btn-cam-reset').addEventListener('click', () => {
     if (document.getElementById('inp-cam-drag-speed')) {
         document.getElementById('inp-cam-drag-speed').value = 3;
         document.getElementById('inp-cam-drag-speed').dispatchEvent(new Event('input'));
+    }
+    
+    if (document.getElementById('sl-drone-speed')) {
+        document.getElementById('sl-drone-speed').value = 0.5;
+        document.getElementById('sl-drone-speed').dispatchEvent(new Event('input'));
     }
 });
 
@@ -476,6 +489,8 @@ const statIds = [
   { id: 'z-lunge-dist', obj: 'zombie', key: 'lungeDist', isFloat: true },
   { id: 'z-lunge-spd', obj: 'zombie', key: 'lungeSpeedMult', isFloat: true },
   { id: 'z-infect-time', obj: 'zombie', key: 'infectTime', isFloat: true },
+  { id: 'z-drone-radius', obj: 'zombie', key: 'droneRadius', isFloat: true },
+  { id: 'z-drone-opacity', obj: 'zombie', key: 'droneOpacity', isFloat: false },
   
   { id: 'c-spd-min', obj: 'civilian', key: 'speedMin', isFloat: true },
   { id: 'c-spd-max', obj: 'civilian', key: 'speedMax', isFloat: true },
@@ -513,7 +528,7 @@ document.getElementById('btn-save-settings').addEventListener('click', () => {
         camAngle: document.getElementById('sl-cam-angle').value,
         camSpeedFollow: document.getElementById('sl-cam-speed-follow').value,
         camSpeedZoom: document.getElementById('sl-cam-speed-zoom').value,
-        camDragSpeed: document.getElementById('inp-cam-drag-speed') ? document.getElementById('inp-cam-drag-speed').value : 0.2,
+        droneMoveSpeed: document.getElementById('sl-drone-speed') ? document.getElementById('sl-drone-speed').value : 0.5,
         bldgAmt: document.getElementById('sl-bldg-amount').value,
         bldgDen: document.getElementById('sl-bldg-density').value,
         bldgHgt: document.getElementById('sl-bldg-height').value,
@@ -523,6 +538,9 @@ document.getElementById('btn-save-settings').addEventListener('click', () => {
         spawnCivCount: document.getElementById('inp-civ-count').value,
         spawnSolCount: document.getElementById('inp-sol-count').value,
         spawnSolInterval: document.getElementById('inp-sol-interval').value,
+        currentCount: currentCount,
+        debugMode: debugMode,
+        autoZoomEnabled: document.getElementById('chk-cam-auto-zoom') ? document.getElementById('chk-cam-auto-zoom').checked : true,
         stats: CONFIG.stats
     };
     localStorage.setItem('zombie_settings_v2', JSON.stringify(s));
@@ -729,8 +747,15 @@ function animate() {
                     flareMarker.material.dispose();
                     flareMarker = null;
                 }
+                const ui = document.getElementById('flare-progress');
+                const txt = document.getElementById('flare-text');
                 if (ui) ui.style.height = '0%';
                 if (txt) txt.textContent = '0s';
+                
+                // Revert to WANDER if they were still gathering
+                if (droneCommand.type === 'GATHER_ALL' || droneCommand.type === 'FLARE_ACTIVE') {
+                    droneCommand = { type: 'WANDER', position: null, target: null };
+                }
             } else {
                 const ui = document.getElementById('flare-progress');
                 const txt = document.getElementById('flare-text');
@@ -852,8 +877,14 @@ function animate() {
                 }
             }
         });
-        zombies.forEach(z => { z.update(dt, input.direction, grid, zombies, debugMode, input.isStopped, flareState === 'active' ? flarePos : null, humans, soldiers); grid.pushOutCollision(z, dt); });
-
+        let dx = isFreeCamera ? freeCamX : smoothedCenterX;
+        let dz = isFreeCamera ? freeCamZ : smoothedCenterZ;
+        let dronePos = new THREE.Vector3(dx, 0, dz);
+        let isMoving = (input.direction.x !== 0 || input.direction.z !== 0);
+        let currentRadius = (flareState === 'active') ? 9999 : CONFIG.stats.zombie.droneRadius;
+        let currentOpacity = (flareState === 'active') ? 30 : CONFIG.stats.zombie.droneOpacity;
+        playerDrone.update(dt, dronePos.x, dronePos.z, isMoving, currentRadius, currentOpacity);
+        zombies.forEach(z => { z.update(dt, droneCommand, dronePos, grid, zombies, debugMode, humans, soldiers); grid.pushOutCollision(z, dt); });
     // Handle Interactions
     for (let i = zombies.length - 1; i >= 0; i--) {
         let z = zombies[i];
@@ -967,13 +998,23 @@ function animate() {
         if (maxSpread < 15) maxSpread = 15;
         
         // Add forward vision
-        if (!input.isStopped) {
-            bestCx += input.direction.x * 12;
-            bestCz += input.direction.z * 12;
-        }
+        let followLerp = 1.0;
+        let leadAmount = 0;
+        let normFollow = cameraSpeedFollow / 100.0;
         
-        let followLerp = 0.05 * Math.pow(10, cameraSpeedFollow * 2.0);
-        if (followLerp > 1.0) followLerp = 1.0;
+        if (normFollow < 0) {
+            followLerp = 0.2 * Math.pow(10, normFollow * 1.3);
+        } else if (normFollow === 0) {
+            followLerp = 1.0;
+        } else {
+            followLerp = 0.1;
+            leadAmount = normFollow * 40;
+        }
+
+        if (!input.isStopped) {
+            bestCx += input.direction.x * leadAmount;
+            bestCz += input.direction.z * leadAmount;
+        }
         
         let zoomLerp = autoZoomEnabled ? 0.05 * Math.pow(10, cameraSpeedZoom * 2.0) : 0;
         if (zoomLerp > 1.0) zoomLerp = 1.0;
@@ -983,6 +1024,20 @@ function animate() {
             smoothedCenterZ += (bestCz - smoothedCenterZ) * followLerp;
             smoothedSpread += (maxSpread - smoothedSpread) * zoomLerp;
         }
+    }
+
+    if (input.isActive) {
+        if (!isFreeCamera && !isTabOverview) {
+            freeCamX = smoothedCenterX;
+            freeCamZ = smoothedCenterZ;
+            freeCamSpread = smoothedSpread;
+            isFreeCamera = true;
+            let el = document.getElementById('camera-mode');
+            if (el) el.textContent = '드론 시점 (F로 복귀)';
+        }
+        let speed = (30 + freeCamSpread * 2.5) * droneMoveSpeed * dt;
+        freeCamX += input.direction.x * speed;
+        freeCamZ += input.direction.z * speed;
     }
 
     let finalCx = smoothedCenterX;
@@ -1000,8 +1055,9 @@ function animate() {
     }
 
     let targetHeight = (30 + finalSpread * 2.5) * cameraDistanceMultiplier;
-    if (targetHeight > cameraMaxHeight) {
-        targetHeight = cameraMaxHeight;
+    let actualMaxHeight = cameraMaxHeight * Math.max(1.0, cameraDistanceMultiplier);
+    if (targetHeight > actualMaxHeight) {
+        targetHeight = actualMaxHeight;
     }
     
     // Center the camera exactly on the targets
@@ -1107,6 +1163,53 @@ window.addEventListener('keydown', (e) => {
         e.preventDefault();
         isTabOverview = true;
     }
+    if (e.code === 'Space') {
+        e.preventDefault();
+        droneCommand.type = 'STOP';
+        droneCommand.position = null;
+        droneCommand.target = null;
+    }
+    if (e.code === 'KeyR') {
+        e.preventDefault();
+        droneCommand.type = 'GATHER';
+        const centerMouse = new THREE.Vector2(0, 0);
+        const r = new THREE.Raycaster();
+        r.setFromCamera(centerMouse, camera);
+        const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+        const target = new THREE.Vector3();
+        if (r.ray.intersectPlane(plane, target)) {
+            let valid = getValidSpawnPoint(target.x, target.z);
+            droneCommand.position = new THREE.Vector3(valid.x, 0, valid.z);
+        }
+        droneCommand.target = null;
+    }
+});
+
+window.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    if (e.target.closest('#ui-layer') || e.target.closest('.toggle-btn') || e.target.closest('#minimap-container') || e.target.closest('#flare-ui')) return;
+    
+    // Raycast to find human or soldier
+    const mouse = new THREE.Vector2(
+        (e.clientX / window.innerWidth) * 2 - 1,
+        -(e.clientY / window.innerHeight) * 2 + 1
+    );
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(mouse, camera);
+    
+    let allTargets = humans.concat(soldiers);
+    let meshes = allTargets.map(t => t.mesh);
+    let intersects = raycaster.intersectObjects(meshes);
+    
+    if (intersects.length > 0) {
+        let hitMesh = intersects[0].object;
+        let targetEntity = allTargets.find(t => t.mesh === hitMesh);
+        if (targetEntity) {
+            droneCommand.type = 'ATTACK';
+            droneCommand.position = null;
+            droneCommand.target = targetEntity;
+        }
+    }
 });
 
 window.addEventListener('keyup', (e) => {
@@ -1139,7 +1242,7 @@ let lastMouseY = 0;
 window.addEventListener('mousedown', (e) => {
     if (e.target.closest('#ui-layer') || e.target.closest('.toggle-btn') || e.target.closest('#minimap-container') || e.target.closest('#flare-ui')) return;
 
-    if (e.button === 1 || e.button === 0) { // Middle or left click
+    if (e.button === 1) { // Middle click only
         e.preventDefault();
         isDragging = true;
         if (!isFreeCamera) {
@@ -1166,7 +1269,7 @@ window.addEventListener('mousemove', (e) => {
         // We normalize by 100.0 as a baseline height for the drag speed multiplier
         let baseRatio = camera.position.y / 100.0; 
         if (baseRatio < 0.1) baseRatio = 0.1;
-        let panSpeed = cameraDragSpeed * baseRatio;
+        let panSpeed = 0.3 * baseRatio;
         
         freeCamX -= dx * panSpeed;
         freeCamZ -= dy * panSpeed;
@@ -1188,7 +1291,8 @@ function updateCameraFromMinimap(e) {
     const mappedZ = (y / rect.height) * mapSize - (mapSize / 2);
     
     let targetHeight = (30 + smoothedSpread * 2.5) * cameraDistanceMultiplier;
-    if (targetHeight > cameraMaxHeight) targetHeight = cameraMaxHeight;
+    let actualMaxHeight = cameraMaxHeight * Math.max(1.0, cameraDistanceMultiplier);
+    if (targetHeight > actualMaxHeight) targetHeight = actualMaxHeight;
     
     let uiOffsetWorldX = 0;
     

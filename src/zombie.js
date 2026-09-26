@@ -24,39 +24,15 @@ export class Zombie {
     this.lastInputDirection = new THREE.Vector3();
   }
 
-  update(dt, inputDir, grid, allZombies, debug, isStopped, flarePos = null, humans = [], soldiers = []) {
-    let moveDir = new THREE.Vector3(inputDir.x, 0, inputDir.z);
-    let isFlareActive = (flarePos !== null);
-    
-    if (!isFlareActive && (isStopped || moveDir.lengthSq() === 0)) {
-        this.path = [];
-        this.lastInputDirection.copy(moveDir);
-        this.updateDebugLine(false);
-        return;
-    }
-
-    if (isFlareActive) {
-        moveDir.copy(flarePos).sub(this.mesh.position);
-        moveDir.y = 0;
-        if (moveDir.lengthSq() > 1) {
-            moveDir.normalize();
-        } else {
-            moveDir.set(0, 0, 0);
-        }
-        if (Math.random() < 0.1) this.path = []; // Recalculate path periodically towards flare
-    } else if (moveDir.distanceToSquared(this.lastInputDirection) > 0.1) {
-        this.path = [];
-        this.lastInputDirection.copy(moveDir);
-    }
-
+  update(dt, droneCommand, dronePos, grid, allZombies, debug, humans = [], soldiers = []) {
     let pos = this.mesh.position.clone();
     
+    // Separation force
     let sepForce = new THREE.Vector3();
     let count = 0;
     for (let other of allZombies) {
         if (other !== this) {
             let distSq = pos.distanceToSquared(other.mesh.position);
-            // Zombie diameter is approx 1, adjust separation radius accordingly
             if (distSq < 2.0 && distSq > 0) {
                 let diff = pos.clone().sub(other.mesh.position);
                 diff.normalize().divideScalar(Math.sqrt(distSq));
@@ -69,49 +45,125 @@ export class Zombie {
         sepForce.divideScalar(count).multiplyScalar(2.0); // weak separation
     }
 
-    let closestTarget = null;
-    let closestDistSq = Infinity;
-    
-    for (let h of humans) {
-        if (h.isTransforming) continue;
-        let d = pos.distanceToSquared(h.mesh.position);
-        if (d < closestDistSq) { closestDistSq = d; closestTarget = h; }
-    }
-    for (let s of soldiers) {
-        let d = pos.distanceToSquared(s.mesh.position);
-        if (d < closestDistSq) { closestDistSq = d; closestTarget = s; }
-    }
-
-    let isLunging = false;
-    let isBiting = false;
+    // 1. Validate current target if any
     let lungeDistSq = CONFIG.stats.zombie.lungeDist * CONFIG.stats.zombie.lungeDist;
-    if (closestTarget && closestDistSq < lungeDistSq) {
-        isLunging = true;
-        if (closestDistSq < 2.25) { // Bite distance (1.5)
-            isBiting = true;
+    if (this.currentTarget) {
+        let stillValid = false;
+        if (humans.includes(this.currentTarget) && !this.currentTarget.isTransforming) stillValid = true;
+        if (soldiers.includes(this.currentTarget) && this.currentTarget.hp > 0) stillValid = true;
+        
+        if (stillValid) {
+            let d = pos.distanceToSquared(this.currentTarget.mesh.position);
+            if (d > lungeDistSq * 1.5) {
+                stillValid = false;
+            }
+        }
+        
+        if (!stillValid) {
+            if (this.currentTarget.targetedBy === this) this.currentTarget.targetedBy = null;
+            this.currentTarget = null;
         }
     }
 
+    // 2. Find closest target for biting/auto-attack
+    let closestTarget = null;
+    let closestDistSq = Infinity;
+    
+    if (this.currentTarget && this.currentTarget.targetedBy === this) {
+        closestTarget = this.currentTarget;
+        closestDistSq = pos.distanceToSquared(this.currentTarget.mesh.position);
+    } else {
+        for (let h of humans) {
+            if (h.isTransforming) continue;
+            if (h.targetedBy && h.targetedBy !== this) continue;
+            let d = pos.distanceToSquared(h.mesh.position);
+            if (d < closestDistSq) { closestDistSq = d; closestTarget = h; }
+        }
+        for (let s of soldiers) {
+            if (s.targetedBy && s.targetedBy !== this) continue;
+            let d = pos.distanceToSquared(s.mesh.position);
+            if (d < closestDistSq) { closestDistSq = d; closestTarget = s; }
+        }
+    }
+
+    let isBiting = (closestTarget && closestDistSq < 2.25);
+    
+    // Priorities
+    // 1. Stop
+    if (droneCommand.type === 'STOP') {
+        this.path = [];
+        this.updateDebugLine(false);
+        if (isBiting) {
+            let lookTarget = closestTarget.mesh.position.clone();
+            lookTarget.y = this.mesh.position.y;
+            this.mesh.lookAt(lookTarget);
+        }
+        if (sepForce.lengthSq() > 0) {
+            this.move(sepForce.normalize(), dt, grid, false);
+        }
+        return; // Early return for STOP
+    }
+
     if (isBiting) {
-        // Stop moving, face the target
+        // Stop moving, face the target (still applying separation lightly)
         let lookTarget = closestTarget.mesh.position.clone();
         lookTarget.y = this.mesh.position.y;
         this.mesh.lookAt(lookTarget);
         this.updateDebugLine(false);
+        if (sepForce.lengthSq() > 0) {
+            this.move(sepForce.normalize(), dt, grid, false);
+        }
         return;
     }
 
-    if (isLunging) {
-        // Override path and move directly to target with increased speed
-        this.path = [];
-        moveDir.copy(closestTarget.mesh.position).sub(this.mesh.position);
-        moveDir.y = 0;
-        if (moveDir.lengthSq() > 0) moveDir.normalize();
-        
-        let finalDir = moveDir.clone().add(sepForce).normalize();
-        this.move(finalDir, dt, grid, isLunging);
-        this.updateDebugLine(false);
-        return;
+    let targetPos = null;
+    let isLunging = false;
+
+    // 2. Direct commands
+    if (droneCommand.type === 'ATTACK' && droneCommand.target && (droneCommand.target.hp > 0 || !droneCommand.target.isTransforming)) {
+        targetPos = droneCommand.target.mesh.position.clone();
+        isLunging = true;
+    } else if (droneCommand.type === 'GATHER' && droneCommand.position) {
+        targetPos = droneCommand.position.clone();
+    } else if (droneCommand.type === 'GATHER_ALL' && droneCommand.position) {
+        targetPos = droneCommand.position.clone();
+    } else {
+        // 3. Drone Influence Range or Auto-Attack
+        let droneRadSq = (droneCommand && droneCommand.type === 'FLARE_ACTIVE') ? Infinity : (CONFIG.stats.zombie.droneRadius * CONFIG.stats.zombie.droneRadius);
+        if (closestTarget && closestDistSq < lungeDistSq) {
+            targetPos = closestTarget.mesh.position.clone();
+            isLunging = true;
+            this.currentTarget = closestTarget;
+            closestTarget.targetedBy = this;
+        } else {
+            if (this.currentTarget && this.currentTarget.targetedBy === this) {
+                this.currentTarget.targetedBy = null;
+            }
+            this.currentTarget = null;
+            
+            if (dronePos && pos.distanceToSquared(dronePos) < droneRadSq) {
+                targetPos = dronePos.clone();
+            } else {
+            // 4. Wander
+            if (!this.wanderTarget || pos.distanceToSquared(this.wanderTarget) < 4.0 || Math.random() < 0.01) {
+                let rx = pos.x + (Math.random() - 0.5) * 20;
+                let rz = pos.z + (Math.random() - 0.5) * 20;
+                this.wanderTarget = new THREE.Vector3(rx, 0, rz);
+            }
+            targetPos = this.wanderTarget.clone();
+            }
+        }
+    }
+
+    // Movement execution
+    let moveDir = new THREE.Vector3();
+    
+    // Re-evaluate path if target changed significantly
+    if (targetPos) {
+        if (!this.lastTargetPos || this.lastTargetPos.distanceToSquared(targetPos) > 4.0) {
+            this.path = [];
+            this.lastTargetPos = targetPos.clone();
+        }
     }
 
     if (this.path.length > 0) {
@@ -127,18 +179,20 @@ export class Zombie {
         } else {
             dirToTarget.normalize();
             dirToTarget.add(sepForce).normalize();
-            this.move(dirToTarget, dt, grid, false);
+            this.move(dirToTarget, dt, grid, isLunging);
         }
     } else {
-        let targetWorld = pos.clone().add(moveDir.clone().multiplyScalar(15));
-        
-        if (!grid.isLineOfSightClear(pos, targetWorld)) {
-            this.path = grid.findPath(pos, targetWorld);
+        if (targetPos && !grid.isLineOfSightClear(pos, targetPos)) {
+            this.path = grid.findPath(pos, targetPos);
         }
         
         if (this.path.length === 0) {
+            if (targetPos) moveDir.copy(targetPos).sub(this.mesh.position);
+            moveDir.y = 0;
+            if (moveDir.lengthSq() > 0) moveDir.normalize();
+            
             let finalDir = moveDir.clone().add(sepForce).normalize();
-            this.move(finalDir, dt, grid, false);
+            this.move(finalDir, dt, grid, isLunging);
         }
     }
 
@@ -197,6 +251,9 @@ export class Zombie {
   }
 
   destroy() {
+    if (this.currentTarget && this.currentTarget.targetedBy === this) {
+        this.currentTarget.targetedBy = null;
+    }
     this.scene.remove(this.mesh);
     this.mesh.geometry.dispose();
     this.mesh.material.dispose();
