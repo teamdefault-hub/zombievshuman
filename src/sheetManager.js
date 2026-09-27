@@ -138,21 +138,26 @@ export class SheetManager {
                 continue;
             }
             
+            const getVal = (key, alias) => {
+                if (row[key] !== undefined && row[key] !== '') return row[key];
+                if (alias && row[alias] !== undefined && row[alias] !== '') return row[alias];
+                return ''; 
+            };
+            
+            const rawHp = getVal('max_hp', '체력');
+            const rawSpeed = getVal('move_speed', '이동_속도');
+            const rawAttack = getVal('attack_damage', '공격력');
+            
+            // If it lacks all essential stats, it's likely an explanation row outside the data range.
+            if (rawHp === '' && rawSpeed === '' && rawAttack === '') {
+                continue;
+            }
+            
             if (!/^[a-zA-Z0-9_]+$/.test(keyStr)) {
                 throw new Error(`[${sheetName}] Row ${rowIndex} error (${keyStr}): Invalid unit_id format. Must be alphanumeric and underscore.`);
             }
             
             try {
-                const getVal = (key, alias) => {
-                    if (row[key] !== undefined && row[key] !== '') return row[key];
-                    if (alias && row[alias] !== undefined && row[alias] !== '') return row[alias];
-                    return ''; 
-                };
-                
-                const rawHp = getVal('max_hp', '체력');
-                const rawSpeed = getVal('move_speed', '이동_속도');
-                const rawAttack = getVal('attack_damage', '공격력');
-                
                 if (rawHp === '' || rawSpeed === '' || rawAttack === '') {
                     throw new Error(`Missing essential stats (max_hp, move_speed, or attack_damage)`);
                 }
