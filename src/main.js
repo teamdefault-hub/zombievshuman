@@ -4,6 +4,7 @@ import { Grid } from './pathfinding.js';
 import { Zombie } from './zombie.js';
 import { Human } from './human.js';
 import { Soldier } from './soldier.js';
+import { SpatialHash } from './spatialHash.js';
 import { GameMap } from './map.js';
 import { Drone } from './drone.js';
 import { CONFIG, generateBuildings } from './config.js';
@@ -12,6 +13,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { OutlinePass } from 'three/addons/postprocessing/OutlinePass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { sheetManager } from './sheetManager.js';
 
 const canvas = document.createElement('canvas');
 document.getElementById('game-container').appendChild(canvas);
@@ -40,9 +42,52 @@ scene.add(dirLight);
 
 const input = new InputManager();
 const grid = new Grid();
+const entityGrid = new SpatialHash(10);
 const gameMap = new GameMap(scene);
 let playerDrone = new Drone(scene);
 document.addEventListener('click', () => soundManager.init(), { once: true });
+
+const dummy = new THREE.Object3D();
+const dummyColor = new THREE.Color();
+
+const zGeo = new THREE.CapsuleGeometry(CONFIG.zombieRadius, 1, 4, 8);
+const zMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+
+const zWalkerIMesh = new THREE.InstancedMesh(zGeo, zMat, 15000);
+zWalkerIMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+zWalkerIMesh.castShadow = true;
+zWalkerIMesh.frustumCulled = false;
+scene.add(zWalkerIMesh);
+
+const zRunnerGeo = new THREE.OctahedronGeometry(CONFIG.zombieRadius * 0.8);
+const zRunnerIMesh = new THREE.InstancedMesh(zRunnerGeo, zMat, 15000);
+zRunnerIMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+zRunnerIMesh.castShadow = true;
+zRunnerIMesh.frustumCulled = false;
+scene.add(zRunnerIMesh);
+
+const zBruteGeo = new THREE.BoxGeometry(CONFIG.zombieRadius * 3, 3, CONFIG.zombieRadius * 3);
+const zBruteIMesh = new THREE.InstancedMesh(zBruteGeo, zMat, 15000);
+zBruteIMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+zBruteIMesh.castShadow = true;
+zBruteIMesh.frustumCulled = false;
+scene.add(zBruteIMesh);
+
+const hGeo = new THREE.CapsuleGeometry(CONFIG.zombieRadius, 1, 4, 8);
+const hMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+const hIMesh = new THREE.InstancedMesh(hGeo, hMat, 10000);
+hIMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+hIMesh.castShadow = true;
+hIMesh.frustumCulled = false;
+scene.add(hIMesh);
+
+const sGeo = new THREE.CapsuleGeometry(CONFIG.zombieRadius, 1, 4, 8);
+const sMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+const sIMesh = new THREE.InstancedMesh(sGeo, sMat, 2000);
+sIMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+sIMesh.castShadow = true;
+sIMesh.frustumCulled = false;
+scene.add(sIMesh);
 
 
 let flareCharge = 0;
@@ -123,6 +168,7 @@ let zombies = [];
 let humans = [];
 let soldiers = [];
 let nextSoldierSpawnTime = 20.0;
+let currentWave = 0;
 let isFirstSolSpawn = true;
 let debugMode = false;
 let currentCount = 100;
@@ -151,6 +197,36 @@ let droneCommand = {
     target: null
 };
 
+
+
+
+function checkTypeLimit(candType, currentEntity, zombies, humans, soldiers, CONFIG) {
+    let limit = CONFIG.units && CONFIG.units[candType] ? CONFIG.units[candType].max_active_count : undefined;
+    if (limit === undefined) return true; // No limit
+    
+    let active = zombies.filter(z => z.type === candType).length;
+    let pendingH = humans.filter(h => h !== currentEntity && h.infectionCandidate === candType && (h.isTransforming || h.infectionPending)).length;
+    let pendingS = soldiers.filter(s => s !== currentEntity && s.infectionCandidate === candType && (s.isTransforming || s.infectionPending)).length;
+    return (active + pendingH + pendingS) < limit;
+}
+
+
+function getValidSpawnPointWithLOS(px, pz, radius, maxDist, gridObj) {
+    for (let r = 0; r <= maxDist; r += 0.5) {
+        let angleSteps = r === 0 ? 1 : 8;
+        for (let a = 0; a < Math.PI * 2; a += (Math.PI * 2) / angleSteps) {
+            let tx = px + Math.cos(a) * r;
+            let tz = pz + Math.sin(a) * r;
+            if (!gridObj.checkCollision(tx, tz, radius)) {
+                if (r === 0 || gridObj.isLineOfSightClear(new THREE.Vector3(px, 0, pz), new THREE.Vector3(tx, 0, tz))) {
+                    return {x: tx, z: tz};
+                }
+            }
+        }
+    }
+    return null;
+}
+
 function getValidSpawnPoint(x, z) {
     let gNode = grid.worldToGrid(x, z);
     if (grid.isWalkable(gNode.gx, gNode.gz)) return {x, z};
@@ -166,8 +242,18 @@ function getValidSpawnPoint(x, z) {
 }
 
 function resetGame(count) {
+    if (sheetManager.applyPending()) {
+        syncSheetToConfig(sheetManager.getConfig());
+    }
+    
     currentCount = count;
     isTabOverview = false;
+    
+    if (CONFIG.drone && playerDrone) {
+        playerDrone.hp = CONFIG.drone.max_hp;
+        playerDrone.regenTimer = 0;
+    }
+    
     flareCharge = 0;
     flareDuration = 0;
     flareState = 'charging';
@@ -186,29 +272,43 @@ function resetGame(count) {
     const flareText = document.getElementById('flare-text');
     if (flareText) flareText.textContent = '충전중';
     
-    zombies.forEach(z => z.destroy());
+    // Hide win/loss screen if exists
+    const endScreen = document.getElementById('game-end-screen');
+    if (endScreen) endScreen.style.display = 'none';
+    
+    zombies.forEach(z => { if (z.flashTimer) clearTimeout(z.flashTimer); z.destroy(); });
     zombies = [];
-    humans.forEach(h => h.destroy());
+    humans.forEach(h => { if (h.flashTimer) clearTimeout(h.flashTimer); h.destroy(); });
     humans = [];
-    soldiers.forEach(s => s.destroy());
+    soldiers.forEach(s => { if (s.flashTimer) clearTimeout(s.flashTimer); s.destroy(); });
     soldiers = [];
+    if (playerDrone && playerDrone.flashTimer) clearTimeout(playerDrone.flashTimer);
+    
+    const configData = sheetManager.getConfig();
+    const settings = configData ? configData.settings : {};
     
     playTime = 0;
     isGameStarted = false;
-    nextSoldierSpawnTime = 20.0;
+    gameOver = false;
+    nextSoldierSpawnTime = settings.military_start_delay_s !== undefined ? settings.military_start_delay_s : 20.0;
+    currentWave = 0;
     isFirstSolSpawn = true;
     document.getElementById('play-time-display').textContent = '00:00';
     
-    const types = ['normal', 'fast', 'slow'];
+    const types = ['normal', 'fast', 'brute'];
     
-    let cols = Math.ceil(Math.sqrt(count));
+    // start_zombie_count instead of passed count if we want to follow sheet exactly
+    let startCount = settings.start_zombie_count !== undefined ? settings.start_zombie_count : count;
+    currentCount = startCount;
+    
+    let cols = Math.ceil(Math.sqrt(startCount));
     let startX = - ((cols - 1) * 1.5) / 2;
     let startZ = - ((cols - 1) * 1.5) / 2; 
     
     let spawned = 0;
     for(let i=0; i<cols; i++) {
         for(let j=0; j<cols; j++) {
-            if(spawned >= count) break;
+            if(spawned >= startCount) break;
             let type = types[spawned % types.length];
             let px = startX + i * 1.5;
             let pz = startZ + j * 1.5;
@@ -219,7 +319,7 @@ function resetGame(count) {
     }
     
     // Spawn Civilians
-    let civCount = parseInt(document.getElementById('inp-civ-count').value) || 0;
+    let civCount = settings.civilian_count !== undefined ? settings.civilian_count : 1200;
     for (let i = 0; i < civCount; i++) {
         let hx, hz;
         
@@ -255,15 +355,11 @@ function resetGame(count) {
     input.reset(); 
     document.getElementById('input-display').textContent = `(0.00, 0.00)`;
     
-    outlinePassZ.selectedObjects = zombies.map(z => z.mesh);
-    outlinePassH.selectedObjects = humans.map(h => h.mesh);
-    outlinePassS.selectedObjects = soldiers.map(s => s.mesh);
+    outlinePassZ.selectedObjects = [zWalkerIMesh, zRunnerIMesh, zBruteIMesh];
+    outlinePassH.selectedObjects = [hIMesh];
+    outlinePassS.selectedObjects = [sIMesh];
 }
 
-document.getElementById('btn-count-1').addEventListener('click', () => resetGame(1));
-document.getElementById('btn-count-10').addEventListener('click', () => resetGame(10));
-document.getElementById('btn-count-50').addEventListener('click', () => resetGame(50));
-document.getElementById('btn-count-100').addEventListener('click', () => resetGame(100));
 // Old btn-reset removed here
 
 document.getElementById('chk-debug').addEventListener('change', (e) => {
@@ -286,13 +382,30 @@ if (flareUI) {
     });
 }
 
+const scatterUI = document.getElementById('scatter-ui');
+if (scatterUI) {
+    scatterUI.addEventListener('click', (e) => {
+        droneCommand = {
+            type: 'SCATTER',
+            position: null,
+            target: null
+        };
+        if (isAimingFlare) {
+            isAimingFlare = false;
+            document.body.style.cursor = 'default';
+            if (flareMarker) flareMarker.visible = false;
+            const btn = document.getElementById('flare-ui');
+            if (btn) btn.style.borderColor = '#666';
+        }
+    });
+}
+
 
 let cameraDistanceMultiplier = 2.3;
 let cameraMaxHeight = 100;
 let cameraAngleRatio = 0.6;
 let cameraSpeedFollow = 0.0;
 let cameraSpeedZoom = 0.0;
-let droneMoveSpeed = 0.5;
 
 const savedSettings = localStorage.getItem('zombie_settings_v2');
 if (savedSettings) {
@@ -303,16 +416,12 @@ if (savedSettings) {
         if (s.camAngle !== undefined) document.getElementById('sl-cam-angle').value = s.camAngle;
         if (s.camSpeedFollow !== undefined) document.getElementById('sl-cam-speed-follow').value = s.camSpeedFollow;
         if (s.camSpeedZoom !== undefined) document.getElementById('sl-cam-speed-zoom').value = s.camSpeedZoom;
-        if (s.droneMoveSpeed !== undefined && document.getElementById('sl-drone-speed')) document.getElementById('sl-drone-speed').value = s.droneMoveSpeed;
         if (s.bldgAmt !== undefined) document.getElementById('sl-bldg-amount').value = s.bldgAmt;
         if (s.bldgDen !== undefined) document.getElementById('sl-bldg-density').value = s.bldgDen;
         if (s.bldgHgt !== undefined) document.getElementById('sl-bldg-height').value = s.bldgHgt;
         if (s.bldgVar !== undefined) document.getElementById('sl-bldg-var').value = s.bldgVar;
         if (s.bldgRot !== undefined) document.getElementById('sl-bldg-rot').value = s.bldgRot;
         if (s.colMargin !== undefined) document.getElementById('sl-col-margin').value = s.colMargin;
-        if (s.spawnCivCount !== undefined) document.getElementById('inp-civ-count').value = s.spawnCivCount;
-        if (s.spawnSolCount !== undefined) document.getElementById('inp-sol-count').value = s.spawnSolCount;
-        if (s.spawnSolInterval !== undefined) document.getElementById('inp-sol-interval').value = s.spawnSolInterval;
         if (s.currentCount !== undefined) currentCount = s.currentCount;
         if (s.debugMode !== undefined) {
             debugMode = s.debugMode;
@@ -323,14 +432,7 @@ if (savedSettings) {
             let chk = document.getElementById('chk-cam-auto-zoom');
             if (chk) {
                 chk.checked = s.autoZoomEnabled;
-                // autoZoomEnabled will be read from element later or we can set it now, 
-                // but since let autoZoomEnabled = ... is below, we just set the checkbox.
             }
-        }
-        if (s.stats) {
-            Object.keys(s.stats).forEach(obj => {
-                if(CONFIG.stats[obj]) Object.assign(CONFIG.stats[obj], s.stats[obj]);
-            });
         }
     } catch(e) {}
 }
@@ -339,13 +441,29 @@ let isSettingsOpen = false;
 
 let playTime = 0;
 let isGameStarted = false;
+let gameOver = false;
 const playTimeDisplay = document.getElementById('play-time-display');
+
+function showEndScreen(title, desc) {
+    const endScreen = document.getElementById('game-end-screen');
+    const titleEl = document.getElementById('game-end-title');
+    const descEl = document.getElementById('game-end-desc');
+    if (endScreen && titleEl && descEl) {
+        titleEl.textContent = title;
+        descEl.textContent = desc;
+        endScreen.style.display = 'flex';
+    }
+}
 
 function formatTime(seconds) {
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 }
+
+document.getElementById('btn-end-restart')?.addEventListener('click', () => {
+    resetGame(currentCount);
+});
 
 document.getElementById('btn-restart-game').addEventListener('click', () => {
     isFreeCamera = false;
@@ -409,16 +527,6 @@ slCamSpeedZoom.addEventListener('input', (e) => {
 });
 
 
-const slDroneSpeed = document.getElementById('sl-drone-speed');
-const valDroneSpeed = document.getElementById('val-drone-speed');
-if (slDroneSpeed && valDroneSpeed) {
-    droneMoveSpeed = parseFloat(slDroneSpeed.value) || 0.5;
-    valDroneSpeed.textContent = droneMoveSpeed.toFixed(1);
-    slDroneSpeed.addEventListener('input', (e) => {
-        droneMoveSpeed = parseFloat(e.target.value) || 0.5;
-        valDroneSpeed.textContent = droneMoveSpeed.toFixed(1);
-    });
-}
 
 let autoZoomEnabled = document.getElementById('chk-cam-auto-zoom').checked;
 document.getElementById('chk-cam-auto-zoom').addEventListener('change', (e) => {
@@ -443,11 +551,6 @@ document.getElementById('btn-cam-reset').addEventListener('click', () => {
     if (document.getElementById('inp-cam-drag-speed')) {
         document.getElementById('inp-cam-drag-speed').value = 3;
         document.getElementById('inp-cam-drag-speed').dispatchEvent(new Event('input'));
-    }
-    
-    if (document.getElementById('sl-drone-speed')) {
-        document.getElementById('sl-drone-speed').value = 0.5;
-        document.getElementById('sl-drone-speed').dispatchEvent(new Event('input'));
     }
 });
 
@@ -479,47 +582,6 @@ slBldgVar.addEventListener('input', (e) => valBldgVar.textContent = e.target.val
 slBldgRot.addEventListener('input', (e) => valBldgRot.textContent = e.target.value);
 slColMargin.addEventListener('input', (e) => valColMargin.textContent = e.target.value);
 
-const statIds = [
-  { id: 'z-spd-min', obj: 'zombie', key: 'speedMin', isFloat: true },
-  { id: 'z-spd-max', obj: 'zombie', key: 'speedMax', isFloat: true },
-  { id: 'z-hp-min', obj: 'zombie', key: 'hpMin', isFloat: false },
-  { id: 'z-hp-max', obj: 'zombie', key: 'hpMax', isFloat: false },
-  { id: 'z-atk-min', obj: 'zombie', key: 'atkMin', isFloat: false },
-  { id: 'z-atk-max', obj: 'zombie', key: 'atkMax', isFloat: false },
-  { id: 'z-lunge-dist', obj: 'zombie', key: 'lungeDist', isFloat: true },
-  { id: 'z-lunge-spd', obj: 'zombie', key: 'lungeSpeedMult', isFloat: true },
-  { id: 'z-infect-time', obj: 'zombie', key: 'infectTime', isFloat: true },
-  { id: 'z-drone-radius', obj: 'zombie', key: 'droneRadius', isFloat: true },
-  { id: 'z-drone-opacity', obj: 'zombie', key: 'droneOpacity', isFloat: false },
-  
-  { id: 'c-spd-min', obj: 'civilian', key: 'speedMin', isFloat: true },
-  { id: 'c-spd-max', obj: 'civilian', key: 'speedMax', isFloat: true },
-  { id: 'c-hp-min', obj: 'civilian', key: 'hpMin', isFloat: false },
-  { id: 'c-hp-max', obj: 'civilian', key: 'hpMax', isFloat: false },
-
-  { id: 's-spd-min', obj: 'soldier', key: 'speedMin', isFloat: true },
-  { id: 's-spd-max', obj: 'soldier', key: 'speedMax', isFloat: true },
-  { id: 's-hp-min', obj: 'soldier', key: 'hpMin', isFloat: false },
-  { id: 's-hp-max', obj: 'soldier', key: 'hpMax', isFloat: false },
-  { id: 's-atk-min', obj: 'soldier', key: 'atkMin', isFloat: false },
-  { id: 's-atk-max', obj: 'soldier', key: 'atkMax', isFloat: false }
-];
-
-statIds.forEach(st => {
-  const input = document.getElementById('sl-' + st.id);
-  const val = document.getElementById('val-' + st.id);
-  if (!input || !val) return;
-  
-  const currentVal = CONFIG.stats[st.obj][st.key];
-  input.value = currentVal;
-  val.textContent = st.isFloat ? currentVal.toFixed(1) : currentVal;
-
-  input.addEventListener('input', (e) => {
-    const v = st.isFloat ? parseFloat(e.target.value) : parseInt(e.target.value, 10);
-    CONFIG.stats[st.obj][st.key] = v;
-    val.textContent = st.isFloat ? v.toFixed(1) : v;
-  });
-});
 
 document.getElementById('btn-save-settings').addEventListener('click', () => {
     const s = {
@@ -528,20 +590,15 @@ document.getElementById('btn-save-settings').addEventListener('click', () => {
         camAngle: document.getElementById('sl-cam-angle').value,
         camSpeedFollow: document.getElementById('sl-cam-speed-follow').value,
         camSpeedZoom: document.getElementById('sl-cam-speed-zoom').value,
-        droneMoveSpeed: document.getElementById('sl-drone-speed') ? document.getElementById('sl-drone-speed').value : 0.5,
         bldgAmt: document.getElementById('sl-bldg-amount').value,
         bldgDen: document.getElementById('sl-bldg-density').value,
         bldgHgt: document.getElementById('sl-bldg-height').value,
         bldgVar: document.getElementById('sl-bldg-var').value,
         bldgRot: document.getElementById('sl-bldg-rot').value,
         colMargin: document.getElementById('sl-col-margin').value,
-        spawnCivCount: document.getElementById('inp-civ-count').value,
-        spawnSolCount: document.getElementById('inp-sol-count').value,
-        spawnSolInterval: document.getElementById('inp-sol-interval').value,
         currentCount: currentCount,
         debugMode: debugMode,
-        autoZoomEnabled: document.getElementById('chk-cam-auto-zoom') ? document.getElementById('chk-cam-auto-zoom').checked : true,
-        stats: CONFIG.stats
+        autoZoomEnabled: document.getElementById('chk-cam-auto-zoom') ? document.getElementById('chk-cam-auto-zoom').checked : true
     };
     localStorage.setItem('zombie_settings_v2', JSON.stringify(s));
     alert('설정이 성공적으로 저장되었습니다!');
@@ -712,7 +769,11 @@ function animate() {
         }
     }
 
-    if (isGameStarted && !isSettingsOpen) {
+    if (isGameStarted && !isSettingsOpen && !gameOver) {
+        let configData = sheetManager.getConfig();
+        let settings = configData ? configData.settings : {};
+        let maxWaves = settings.wave_count !== undefined ? settings.wave_count : 3;
+
         playTime += dt;
         
         // Flare Logic
@@ -775,11 +836,12 @@ function animate() {
         }
         
         // Spawn soldiers periodically
-        let solInterval = parseFloat(document.getElementById('inp-sol-interval').value) || 15.0;
-        let solCount = parseInt(document.getElementById('inp-sol-count').value) || 4;
+        let solInterval = settings.wave_interval_s !== undefined ? settings.wave_interval_s : 40.0;
+        let solCount = settings.soldiers_per_wave !== undefined ? settings.soldiers_per_wave : 4;
         
-        if (playTime >= nextSoldierSpawnTime) {
+        if (playTime >= nextSoldierSpawnTime && currentWave < maxWaves) {
             nextSoldierSpawnTime = playTime + solInterval;
+            currentWave++;
             isFirstSolSpawn = false;
             // Spawn a squad at a random edge
             const edge = Math.floor(Math.random() * 4);
@@ -805,33 +867,113 @@ function animate() {
         lastTime = now;
     }
 
+    entityGrid.clear();
+    for (let i = 0; i < zombies.length; i++) entityGrid.insert(zombies[i]);
+    for (let i = 0; i < humans.length; i++) entityGrid.insert(humans[i]);
+    for (let i = 0; i < soldiers.length; i++) entityGrid.insert(soldiers[i]);
+
     if (!isSettingsOpen) {
         humans.forEach(h => { 
-            h.update(dt, grid, zombies, humans); 
+            h.update(dt, grid, entityGrid); 
             grid.pushOutCollision(h, dt); 
             
-            // Infection bite logic
-            let isBittenNow = false;
-            for(let z of zombies) {
-                if (z.hp > 0 && z.mesh.position.distanceToSquared(h.mesh.position) < 2.25) {
-                    isBittenNow = true;
-                    break;
+            // Infection bite logic (Infector persistence)
+            let zCol = h.infectorZombie ? (h.infectorZombie.colRadius || 0.5) : 0.5;
+            let targetCol = h.colRadius || 0.5;
+            let BITE_DIST_SQ = (targetCol + zCol + 0.2) * (targetCol + zCol + 0.2); // 0.2 tolerance
+            let GRACE_PERIOD = h.infectorZombie ? (h.infectorZombie.infectionBreakGraceS !== undefined ? h.infectorZombie.infectionBreakGraceS : 0.2) : 0.2;
+            
+            if (h.infectorZombie) {
+                if (h.infectorZombie.hp <= 0 || h.infectorZombie.mesh.position.distanceToSquared(h.mesh.position) > BITE_DIST_SQ || !grid.isLineOfSightClear(h.mesh.position, h.infectorZombie.mesh.position)) {
+                    if (h.infectGraceTimer === undefined) h.infectGraceTimer = 0;
+                    h.infectGraceTimer += dt;
+                    if (h.infectGraceTimer > GRACE_PERIOD || h.infectorZombie.hp <= 0) {
+                        h.infectorZombie = null;
+                        h.biteTimer = 0;
+                        h.isBeingBitten = false;
+                        h.infectionPending = false;
+                    }
+                } else {
+                    h.infectGraceTimer = 0;
                 }
             }
-            if (isBittenNow) {
-                if (h.biteTimer === undefined) h.biteTimer = 0;
-                h.biteTimer += dt;
+            
+            if (!h.infectorZombie && !h.isTransforming && !h.infectionPending) {
+                for(let z of zombies) {
+                    let dzCol = z.colRadius || 0.5;
+                    let distSq = (targetCol + dzCol + 0.2) * (targetCol + dzCol + 0.2);
+                    if (z.hp > 0 && z.mesh.position.distanceToSquared(h.mesh.position) <= distSq) {
+                        if (grid.isLineOfSightClear(h.mesh.position, z.mesh.position)) {
+                            h.infectorZombie = z;
+                            h.biteTimer = 0;
+                            h.infectGraceTimer = 0;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            if (h.infectorZombie) {
                 h.isBeingBitten = true;
-                if (h.biteTimer >= CONFIG.stats.zombie.infectTime && !h.isTransforming) {
-                    h.isTransforming = true;
-                    h.transformTimer = 5.0; // 5 seconds
-                    soundManager.playScream();
+                if (h.infectGraceTimer === 0 || h.infectGraceTimer === undefined) {
+                    if (!h.infectionPending) h.biteTimer += dt;
                 }
-            } else {
-                h.isBeingBitten = false;
-                if (h.biteTimer !== undefined && h.biteTimer > 0) {
-                    h.biteTimer -= dt * 0.5;
+                
+                let reqTime = h.infectorZombie.infectTime || 2.0;
+
+
+                if (!h.infectionPending && h.biteTimer >= reqTime && !h.isTransforming) {
+                    let successChance = (h.infectorZombie.infectionChance !== undefined ? h.infectorZombie.infectionChance : 1.0) * (1.0 - (h.infectResist !== undefined ? h.infectResist : 0.0));
+                    if (Math.random() < successChance) {
+                        h.infectionPending = true;
+                        if (!h.infectionCandidate) {
+                            const roster = CONFIG.settings?.spawn_roster ? String(CONFIG.settings.spawn_roster).split(';').map(s=>s.trim()) : ['z_walker'];
+                            const unlocked = CONFIG.settings?.initial_unlocked_zombie_ids ? String(CONFIG.settings.initial_unlocked_zombie_ids).split(';').map(s=>s.trim()) : ['z_walker', 'z_runner', 'z_brute'];
+                            const validTypes = roster.filter(t => unlocked.includes(t));
+                            h.infectionCandidate = validTypes.length > 0 ? validTypes[Math.floor(Math.random() * validTypes.length)] : 'z_walker';
+                        }
+                    } else {
+                        h.biteTimer = 0;
+                    }
                 }
+
+                if (h.infectionPending && !h.isTransforming) {
+                    let max_z = CONFIG.settings?.max_zombies !== undefined ? CONFIG.settings.max_zombies : 100;
+                    
+                    let globalCapOk = (zombies.length + humans.filter(hu => hu !== h && (hu.isTransforming || hu.infectionPending)).length + soldiers.filter(su => su.isTransforming || su.infectionPending).length) < max_z;
+                    let typeCapOk = checkTypeLimit(h.infectionCandidate, h, zombies, humans, soldiers, CONFIG);
+
+                    if (globalCapOk && typeCapOk) {
+                        let candCol = CONFIG.units && h.infectionCandidate && CONFIG.units[h.infectionCandidate] ? (CONFIG.units[h.infectionCandidate].col_radius || 0.5) : 0.5;
+                        let maxDist = CONFIG.settings?.placement_search_radius_m !== undefined ? CONFIG.settings.placement_search_radius_m : 5;
+                        let spawnPos = getValidSpawnPointWithLOS(h.mesh.position.x, h.mesh.position.z, candCol, maxDist, grid);
+                        if (spawnPos) {
+                            h.isTransforming = true;
+                            h.transformTimer = 5.0; 
+                            soundManager.playScream();
+                            h.infectorZombie = null;
+                            h.infectionPending = false;
+                            h.infectionConfirmed = false;
+                            h.spaceWaitTimer = 0;
+                        } else {
+                            if (h.spaceWaitTimer === undefined) h.spaceWaitTimer = 0;
+                            h.spaceWaitTimer += dt;
+                            let waitTimeout = CONFIG.settings?.placement_wait_timeout_s !== undefined ? CONFIG.settings.placement_wait_timeout_s : 5;
+                            if (h.spaceWaitTimer > waitTimeout) {
+                                h.infectionPending = false;
+                                h.infectionConfirmed = false;
+                                h.spaceWaitTimer = 0;
+                                h.biteTimer = 0;
+                                h.infectorZombie = null;
+                                h.infectionBlocked = true;
+                            }
+                        }
+                    } else {
+                        // Global or type cap not OK. We wait for slot. Do NOT increment spaceWaitTimer.
+                    }
+                }
+
+
             }
         });
         
@@ -841,7 +983,7 @@ function animate() {
             if (h.isTransforming && h.transformTimer <= 0) {
                 h.destroy();
                 humans.splice(i, 1);
-                const types = ['normal', 'fast', 'slow'];
+                const types = ['normal', 'fast', 'brute'];
                 const type = types[Math.floor(Math.random() * types.length)];
                 zombies.push(new Zombie(scene, type, h.mesh.position.x, h.mesh.position.z));
             }
@@ -852,28 +994,70 @@ function animate() {
         }
 
         soldiers.forEach(s => { 
-            s.update(dt, grid, zombies, soldiers); 
+            s.update(dt, grid, entityGrid, playerDrone); 
             grid.pushOutCollision(s, dt); 
             
-            // Soldier infection bite logic (instant kill after 1.5s of continuous biting)
-            let isBittenNow = false;
-            for(let z of zombies) {
-                if (z.hp > 0 && z.mesh.position.distanceToSquared(s.mesh.position) < 2.25) {
-                    isBittenNow = true;
-                    break;
+            // Soldier infection bite logic (Infector persistence)
+            let zCol = s.infectorZombie ? (s.infectorZombie.colRadius || 0.5) : 0.5;
+            let targetCol = s.colRadius || 0.5;
+            let BITE_DIST_SQ = (targetCol + zCol + 0.2) * (targetCol + zCol + 0.2); // 0.2 tolerance
+            let GRACE_PERIOD = s.infectorZombie ? (s.infectorZombie.infectionBreakGraceS !== undefined ? s.infectorZombie.infectionBreakGraceS : 0.2) : 0.2;
+            
+            if (s.infectorZombie) {
+                if (s.infectorZombie.hp <= 0 || s.infectorZombie.mesh.position.distanceToSquared(s.mesh.position) > BITE_DIST_SQ || !grid.isLineOfSightClear(s.mesh.position, s.infectorZombie.mesh.position)) {
+                    if (s.infectGraceTimer === undefined) s.infectGraceTimer = 0;
+                    s.infectGraceTimer += dt;
+                    if (s.infectGraceTimer > GRACE_PERIOD || s.infectorZombie.hp <= 0) {
+                        s.infectorZombie = null;
+                        s.biteTimer = 0;
+                        s.isBeingBitten = false;
+                        s.infectionPending = false;
+                    }
+                } else {
+                    s.infectGraceTimer = 0;
                 }
             }
-            if (isBittenNow) {
-                if (s.biteTimer === undefined) s.biteTimer = 0;
-                s.biteTimer += dt;
-                s.isBeingBitten = true;
-                if (s.biteTimer >= CONFIG.stats.zombie.infectTime && s.hp > 0) {
-                    s.hp = 0; // Kills soldier instantly after infectTime bite
+            
+            if (!s.infectorZombie && s.hp > 0 && !s.infectionPending) {
+                for(let z of zombies) {
+                    let dzCol = z.colRadius || 0.5;
+                    let distSq = (targetCol + dzCol + 0.2) * (targetCol + dzCol + 0.2);
+                    if (z.hp > 0 && z.mesh.position.distanceToSquared(s.mesh.position) <= distSq) {
+                        if (grid.isLineOfSightClear(s.mesh.position, z.mesh.position)) {
+                            s.infectorZombie = z;
+                            s.biteTimer = 0;
+                            s.infectGraceTimer = 0;
+                            break;
+                        }
+                    }
                 }
-            } else {
-                s.isBeingBitten = false;
-                if (s.biteTimer !== undefined && s.biteTimer > 0) {
-                    s.biteTimer -= dt * 0.5;
+            }
+            
+            if (s.infectorZombie) {
+                s.isBeingBitten = true;
+                if (s.infectGraceTimer === 0 || s.infectGraceTimer === undefined) {
+                    if (!s.infectionPending) s.biteTimer += dt;
+                }
+                
+                let reqTime = s.infectorZombie.infectTime || 2.0;
+                if (s.infectionPending) {
+                    if (zombies.length < (CONFIG.settings?.max_zombies !== undefined ? CONFIG.settings.max_zombies : 100)) {
+                        s.hp = 0; // Kills soldier instantly
+                        s.infectorZombie = null;
+                        s.infectionPending = false;
+                    }
+                } else if (s.biteTimer >= reqTime && s.hp > 0) {
+                    let successChance = (s.infectorZombie.infectionChance !== undefined ? s.infectorZombie.infectionChance : 1.0) * (1.0 - (s.infectResist !== undefined ? s.infectResist : 0.0));
+                    if (Math.random() < successChance) {
+                        s.infectionPending = true;
+                        if (zombies.length < (CONFIG.settings?.max_zombies !== undefined ? CONFIG.settings.max_zombies : 100)) {
+                            s.hp = 0; // Kills soldier instantly
+                            s.infectorZombie = null;
+                            s.infectionPending = false;
+                        }
+                    } else {
+                        s.biteTimer = 0; // Reset progress on failure
+                    }
                 }
             }
         });
@@ -884,7 +1068,18 @@ function animate() {
         let currentRadius = (flareState === 'active') ? 9999 : CONFIG.stats.zombie.droneRadius;
         let currentOpacity = (flareState === 'active') ? 30 : CONFIG.stats.zombie.droneOpacity;
         playerDrone.update(dt, dronePos.x, dronePos.z, isMoving, currentRadius, currentOpacity);
-        zombies.forEach(z => { z.update(dt, droneCommand, dronePos, grid, zombies, debugMode, humans, soldiers); grid.pushOutCollision(z, dt); });
+        
+        // Drone HP Regeneration
+        if (CONFIG.drone && playerDrone.hp !== undefined && playerDrone.hp > 0 && playerDrone.hp < CONFIG.drone.max_hp) {
+            if (playerDrone.regenTimer === undefined) playerDrone.regenTimer = 0;
+            playerDrone.regenTimer += dt;
+            
+            if (CONFIG.drone.hp_regen_per_s > 0 && playerDrone.regenTimer >= CONFIG.drone.regen_delay_s) {
+                playerDrone.hp += CONFIG.drone.hp_regen_per_s * dt;
+                if (playerDrone.hp > CONFIG.drone.max_hp) playerDrone.hp = CONFIG.drone.max_hp;
+            }
+        }
+        zombies.forEach(z => { z.update(dt, droneCommand, dronePos, grid, entityGrid, debugMode); grid.pushOutCollision(z, dt); });
     // Handle Interactions
     for (let i = zombies.length - 1; i >= 0; i--) {
         let z = zombies[i];
@@ -916,18 +1111,33 @@ function animate() {
                     if (s.hp <= 0) {
                         s.destroy();
                         soldiers.splice(j, 1);
-                        const types = ['normal', 'fast', 'slow'];
-                        const type = types[Math.floor(Math.random() * types.length)];
-                        zombies.push(new Zombie(scene, type, s.mesh.position.x, s.mesh.position.z));
                     }
                 }
             }
         }
+        // Check Win/Loss conditions at the end of the frame
+        let activeZombies = zombies.filter(z => z.hp > 0).length;
+        let activeSoldiers = soldiers.filter(s => s.hp > 0).length;
+        let pendingSolCount = typeof pendingSoldiers !== 'undefined' ? pendingSoldiers : 0;
+        
+        let isLoss = (activeZombies === 0) || (CONFIG.drone && playerDrone && playerDrone.hp <= 0);
+        // Playtime > 1.0 removed. Now we just check if the first wave actually started.
+        let configDataLocal = sheetManager.getConfig();
+        let maxWavesLocal = (configDataLocal && configDataLocal.settings && configDataLocal.settings.wave_count !== undefined) ? configDataLocal.settings.wave_count : 3;
+        let isWin = (currentWave >= maxWavesLocal) && (activeSoldiers === 0) && (pendingSolCount === 0) && isGameStarted && !isFirstSolSpawn;
+
+        if (isLoss) {
+            gameOver = true;
+            showEndScreen('패배', '좀비 군단이 전멸했습니다.');
+        } else if (isWin) {
+            gameOver = true;
+            showEndScreen('승리', '모든 군대를 처치했습니다.');
+        }
     } // End if (!isSettingsOpen)
 
-    outlinePassZ.selectedObjects = zombies.map(z => z.mesh);
-    outlinePassH.selectedObjects = humans.map(h => h.mesh);
-    outlinePassS.selectedObjects = soldiers.map(s => s.mesh);
+    outlinePassZ.selectedObjects = [zWalkerIMesh, zRunnerIMesh, zBruteIMesh];
+    outlinePassH.selectedObjects = [hIMesh];
+    outlinePassS.selectedObjects = [sIMesh];
     
     // Update HUD Stats
     let elZ = document.getElementById('hud-zombie-count');
@@ -1035,7 +1245,7 @@ function animate() {
             let el = document.getElementById('camera-mode');
             if (el) el.textContent = '드론 시점 (F로 복귀)';
         }
-        let speed = (30 + freeCamSpread * 2.5) * droneMoveSpeed * dt;
+        let speed = (30 + freeCamSpread * 2.5) * (CONFIG.droneSpeed !== undefined ? (CONFIG.droneSpeed / 12.0) : 0.5) * dt;
         freeCamX += input.direction.x * speed;
         freeCamZ += input.direction.z * speed;
     }
@@ -1084,6 +1294,78 @@ function animate() {
     camera.lookAt(finalCx + uiOffsetWorldX, 0, finalCz);
 
     drawMinimap();
+
+    let walkerCount = 0;
+    let runnerCount = 0;
+    let bruteCount = 0;
+
+    for (let i = 0; i < zombies.length; i++) {
+        let z = zombies[i];
+        dummy.position.copy(z.mesh.position);
+        
+        if (z.type === 'brute') {
+            dummy.position.y = 1.5; // Brute is taller (height 3)
+        } else if (z.type === 'fast') {
+            dummy.position.y = 0.5; // Octahedron is smaller
+        }
+        
+        dummy.quaternion.copy(z.mesh.quaternion);
+        dummy.updateMatrix();
+        
+        dummyColor.setHex(CONFIG.colors.zombie);
+
+        if (z.type === 'normal' || !z.type) {
+            zWalkerIMesh.setMatrixAt(walkerCount, dummy.matrix);
+            zWalkerIMesh.setColorAt(walkerCount, dummyColor);
+            walkerCount++;
+        } else if (z.type === 'fast') {
+            zRunnerIMesh.setMatrixAt(runnerCount, dummy.matrix);
+            zRunnerIMesh.setColorAt(runnerCount, dummyColor);
+            runnerCount++;
+        } else if (z.type === 'brute') {
+            zBruteIMesh.setMatrixAt(bruteCount, dummy.matrix);
+            zBruteIMesh.setColorAt(bruteCount, dummyColor);
+            bruteCount++;
+        }
+    }
+
+    zWalkerIMesh.count = walkerCount;
+    zWalkerIMesh.instanceMatrix.needsUpdate = true;
+    if (zWalkerIMesh.instanceColor) zWalkerIMesh.instanceColor.needsUpdate = true;
+
+    zRunnerIMesh.count = runnerCount;
+    zRunnerIMesh.instanceMatrix.needsUpdate = true;
+    if (zRunnerIMesh.instanceColor) zRunnerIMesh.instanceColor.needsUpdate = true;
+
+    zBruteIMesh.count = bruteCount;
+    zBruteIMesh.instanceMatrix.needsUpdate = true;
+    if (zBruteIMesh.instanceColor) zBruteIMesh.instanceColor.needsUpdate = true;
+
+    hIMesh.count = humans.length;
+    for (let i = 0; i < humans.length; i++) {
+        let h = humans[i];
+        dummy.position.copy(h.mesh.position);
+        dummy.quaternion.copy(h.mesh.quaternion);
+        dummy.updateMatrix();
+        hIMesh.setMatrixAt(i, dummy.matrix);
+        hIMesh.setColorAt(i, h.color);
+    }
+    hIMesh.instanceMatrix.needsUpdate = true;
+    if (hIMesh.instanceColor) hIMesh.instanceColor.needsUpdate = true;
+
+    sIMesh.count = soldiers.length;
+    for (let i = 0; i < soldiers.length; i++) {
+        let s = soldiers[i];
+        dummy.position.copy(s.mesh.position);
+        dummy.quaternion.copy(s.mesh.quaternion);
+        dummy.updateMatrix();
+        sIMesh.setMatrixAt(i, dummy.matrix);
+        if (s.isHit) dummyColor.setHex(0xffffff);
+        else dummyColor.setHex(CONFIG.colors.soldier);
+        sIMesh.setColorAt(i, dummyColor);
+    }
+    sIMesh.instanceMatrix.needsUpdate = true;
+    if (sIMesh.instanceColor) sIMesh.instanceColor.needsUpdate = true;
 
     composer.render();
     
@@ -1187,7 +1469,7 @@ window.addEventListener('keydown', (e) => {
 
 window.addEventListener('contextmenu', (e) => {
     e.preventDefault();
-    if (e.target.closest('#ui-layer') || e.target.closest('.toggle-btn') || e.target.closest('#minimap-container') || e.target.closest('#flare-ui')) return;
+    if (e.target.closest('#ui-layer') || e.target.closest('.toggle-btn') || e.target.closest('#minimap-container') || e.target.closest('#action-bar')) return;
     
     // Raycast to find human or soldier
     const mouse = new THREE.Vector2(
@@ -1219,7 +1501,7 @@ window.addEventListener('keyup', (e) => {
 });
 
 window.addEventListener('wheel', (e) => {
-    if (e.target.closest('#ui-layer') || e.target.closest('.toggle-btn') || e.target.closest('#minimap-container') || e.target.closest('#flare-ui')) return;
+    if (e.target.closest('#ui-layer') || e.target.closest('.toggle-btn') || e.target.closest('#minimap-container') || e.target.closest('#action-bar')) return;
     e.preventDefault();
     if (!isFreeCamera) freeCamSpread = smoothedSpread;
     freeCamSpread += e.deltaY * 0.05;
@@ -1240,7 +1522,7 @@ let lastMouseX = 0;
 let lastMouseY = 0;
 
 window.addEventListener('mousedown', (e) => {
-    if (e.target.closest('#ui-layer') || e.target.closest('.toggle-btn') || e.target.closest('#minimap-container') || e.target.closest('#flare-ui')) return;
+    if (e.target.closest('#ui-layer') || e.target.closest('.toggle-btn') || e.target.closest('#minimap-container') || e.target.closest('#action-bar')) return;
 
     if (e.button === 1) { // Middle click only
         e.preventDefault();
@@ -1325,7 +1607,7 @@ if (minimapCanvas) {
 }
 
 window.addEventListener('dblclick', (e) => {
-    if (e.target.closest('#ui-layer') || e.target.closest('.toggle-btn') || e.target.closest('#minimap-container') || e.target.closest('#flare-ui')) return;
+    if (e.target.closest('#ui-layer') || e.target.closest('.toggle-btn') || e.target.closest('#minimap-container') || e.target.closest('#action-bar')) return;
 
     if (isAimingFlare && e.button === 0) {
         const mouse = new THREE.Vector2();
@@ -1360,4 +1642,133 @@ window.addEventListener('dblclick', (e) => {
     }
 });
 
-animate();
+function syncSheetToConfig(sheetCfg) {
+    if (!CONFIG.units) CONFIG.units = {};
+    for (const [unitId, unitData] of Object.entries(sheetCfg.units)) {
+        CONFIG.units[unitId] = {
+            hp: unitData.hp,
+            speed: unitData.speed,
+            attack: unitData.attack,
+            attack_speed: unitData.attack_speed,
+            attack_dist: unitData.attack_dist,
+            sight_range: unitData.sight_range,
+            infectTime: sheetCfg.abilities[unitId]?.infect_time_s,
+            can_target_air: sheetCfg.abilities[unitId]?.can_target_air,
+            infection_chance: sheetCfg.abilities[unitId]?.infection_chance !== undefined ? sheetCfg.abilities[unitId].infection_chance : 1.0,
+            infection_break_grace_s: sheetCfg.abilities[unitId]?.infection_break_grace_s !== undefined ? sheetCfg.abilities[unitId].infection_break_grace_s : 0.2,
+            infect_resist: unitData.infect_resist !== undefined ? unitData.infect_resist : 0.0,
+            col_radius: unitData.col_radius !== undefined ? unitData.col_radius : 0.5
+        };
+    }
+    
+    // Drone
+    if (sheetCfg.drone) {
+        CONFIG.drone = {
+            max_hp: sheetCfg.drone['max_hp'] !== undefined ? sheetCfg.drone['max_hp'] : 100,
+            damage_reduction: sheetCfg.drone['damage_reduction'] || 0,
+            hp_regen_per_s: sheetCfg.drone['hp_regen_per_s'] || 0,
+            regen_delay_s: sheetCfg.drone['regen_delay_s'] || 8,
+            flight_height: sheetCfg.drone['flight_height'] || 10,
+            move_speed: sheetCfg.drone['move_speed'] || 6,
+            signal_radius: sheetCfg.drone['signal_radius'] || 12
+        };
+        
+        if (sheetCfg.drone['move_speed']) CONFIG.droneSpeed = sheetCfg.drone['move_speed'];
+        if (sheetCfg.drone['signal_radius']) CONFIG.stats.zombie.droneRadius = sheetCfg.drone['signal_radius'];
+    }
+    
+    // Update UI Status Text
+    updateSheetUI();
+}
+
+let isRefreshingSheet = false;
+function updateSheetUI(errorMsg = null) {
+    const statusText = document.getElementById('sheet-status-text');
+    const sourceText = document.getElementById('sheet-source-text');
+    const idText = document.getElementById('sheet-id-text');
+    const timeText = document.getElementById('sheet-time-text');
+    const pendingText = document.getElementById('sheet-pending-text');
+    const errorText = document.getElementById('sheet-error-text');
+    
+    if (sheetManager.lastValidConfig) {
+        if (statusText) statusText.innerText = "상태: 동기화 완료";
+        if (sourceText) sourceText.innerText = "설정 출처: " + (sheetManager.lastValidConfig.source || "알 수 없음");
+        if (idText) idText.innerText = "현재 적용된 식별값: " + (sheetManager.lastValidConfig.id || "알 수 없음");
+        if (timeText && sheetManager.lastValidConfig.fetchTime) {
+            timeText.innerText = "마지막 정상 로드: " + new Date(sheetManager.lastValidConfig.fetchTime).toLocaleString();
+        }
+    }
+    
+    if (sheetManager.pendingConfig) {
+        if (pendingText) pendingText.style.display = 'block';
+    } else {
+        if (pendingText) pendingText.style.display = 'none';
+    }
+    
+    if (errorMsg) {
+        if (errorText) {
+            errorText.style.display = 'block';
+            errorText.innerText = "갱신 실패: " + errorMsg + " (기존 설정 유지됨)";
+        }
+    } else {
+        if (errorText) errorText.style.display = 'none';
+    }
+}
+
+document.getElementById('btn-sheet-refresh')?.addEventListener('click', async () => {
+    if (isRefreshingSheet) return;
+    isRefreshingSheet = true;
+    
+    const statusText = document.getElementById('sheet-status-text');
+    if (statusText) statusText.innerText = "상태: 갱신 중...";
+    
+    updateSheetUI(); // clear errors
+    
+    const res = await sheetManager.fetchAll();
+    isRefreshingSheet = false;
+    
+    if (res.success) {
+        updateSheetUI();
+    } else {
+        if (statusText) statusText.innerText = "상태: 동기화 완료 (갱신 실패)";
+        updateSheetUI(res.message);
+    }
+});
+
+async function initGame() {
+    const res = await sheetManager.fetchAll();
+    if (res.success) {
+        sheetManager.applyPending();
+    }
+    
+    const config = sheetManager.getConfig();
+    if (!config) {
+        const title = document.getElementById('loading-text');
+        const sub = document.getElementById('loading-subtext');
+        if (title) title.innerText = "최초 실행 시 설정 데이터가 필요합니다.";
+        if (sub) sub.innerText = res.message || "시트 연결을 확인하세요.";
+        return; // Block start
+    }
+    
+    syncSheetToConfig(config);
+    
+    const loading = document.getElementById('loading-screen');
+    if (loading) loading.style.display = 'none';
+    
+    // Simulate initial map and game reset
+    const applyMapBtn = document.getElementById('btn-apply-map');
+    if (applyMapBtn) applyMapBtn.click();
+    resetGame(config.settings['start_zombie_count'] || 1);
+    animate();
+}
+
+window.zombies = zombies;
+window.humans = humans;
+window.soldiers = soldiers;
+window.playerDrone = playerDrone;
+window.CONFIG = CONFIG;
+window.playTime = playTime;
+window.sheetManager = sheetManager;
+window.currentWave = currentWave;
+
+initGame();

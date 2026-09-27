@@ -7,13 +7,43 @@
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
+    <div id="loading-screen" style="position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; background: #111; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 2000; font-family: sans-serif;">
+      <h2 id="loading-text">시트 설정 불러오는 중...</h2>
+      <p id="loading-subtext" style="color: #aaa; margin-top: 10px; max-width: 80%; text-align: center;"></p>
+    </div>
     <div class="game-container" id="game-container">
+      <div id="game-end-screen" style="display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); color: white; flex-direction: column; align-items: center; justify-content: center; z-index: 1000;">
+        <h1 id="game-end-title" style="font-size: 3rem; margin-bottom: 20px;"></h1>
+        <p id="game-end-desc" style="font-size: 1.5rem; margin-bottom: 30px;"></p>
+        <button id="btn-end-restart" style="padding: 10px 20px; font-size: 1.2rem; cursor: pointer;">재시작</button>
+      </div>
       <canvas id="hud-canvas" style="position: absolute; top: 0; left: 0; pointer-events: none; z-index: 50; width: 100%; height: 100%;"></canvas>
       
-      <div id="flare-ui" style="position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%); width: 80px; height: 80px; background: rgba(0,0,0,0.7); border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; border: 3px solid #666; pointer-events: auto; user-select: none; z-index: 100; transition: border-color 0.3s, transform 0.1s;">
-        <div id="flare-progress" style="position: absolute; bottom: 0; left: 0; width: 100%; height: 0%; background: rgba(255, 87, 34, 0.5); border-radius: 50%; z-index: 1; pointer-events: none; transition: height 0.2s;"></div>
-        <span style="color: white; font-size: 24px; z-index: 2; pointer-events: none;">📡</span>
-        <span id="flare-text" style="color: white; font-size: 11px; font-weight: bold; z-index: 2; pointer-events: none; margin-top: 2px;">집결 전파</span>
+      <div id="action-bar" style="position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; z-index: 100; pointer-events: auto;">
+        
+        <!-- Button 1: Flare (집결 전파) -->
+        <div id="flare-ui" style="position: relative; width: 60px; height: 60px; background: rgba(0,0,0,0.7); border-radius: 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; border: 2px solid #666; user-select: none; transition: border-color 0.3s, transform 0.1s; overflow: hidden;">
+          <div id="flare-progress" style="position: absolute; bottom: 0; left: 0; width: 100%; height: 0%; background: rgba(255, 87, 34, 0.5); z-index: 1; pointer-events: none; transition: height 0.2s;"></div>
+          <span style="color: white; font-size: 20px; z-index: 2; pointer-events: none;">📡</span>
+          <span id="flare-text" style="color: white; font-size: 10px; font-weight: bold; z-index: 2; pointer-events: none; margin-top: 2px;">집결 전파</span>
+        </div>
+
+        <!-- Button 2: Scatter (산개) -->
+        <div id="scatter-ui" style="position: relative; width: 60px; height: 60px; background: rgba(0,0,0,0.7); border-radius: 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; border: 2px solid #666; user-select: none; transition: border-color 0.3s, transform 0.1s; overflow: hidden;">
+          <span style="color: white; font-size: 20px; z-index: 2; pointer-events: none;">💨</span>
+          <span id="scatter-text" style="color: white; font-size: 10px; font-weight: bold; z-index: 2; pointer-events: none; margin-top: 2px;">산개</span>
+        </div>
+
+        <!-- Button 3: Placeholder -->
+        <div style="position: relative; width: 60px; height: 60px; background: rgba(0,0,0,0.4); border-radius: 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; border: 2px solid #444; user-select: none;">
+          <span style="color: #666; font-size: 20px;">🔒</span>
+        </div>
+
+        <!-- Button 4: Placeholder -->
+        <div style="position: relative; width: 60px; height: 60px; background: rgba(0,0,0,0.4); border-radius: 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; border: 2px solid #444; user-select: none;">
+          <span style="color: #666; font-size: 20px;">🔒</span>
+        </div>
+
       </div>
 
       <div id="minimap-container">
@@ -56,18 +86,12 @@
           <button id="btn-restart-game" style="flex:1; background: #E91E63; font-weight: bold;" title="좀비 1마리, 시간/병력 초기화">게임 새로 시작</button>
           <button id="btn-reset-exp" style="flex:1; background: #2196F3;" title="선택된 좀비 수 유지, 시간/병력 초기화">실험 리셋</button>
         </div>
-        <p style="margin:5px 0;">좀비 수 선택:</p>
-        <div class="button-group">
-          <button id="btn-count-1">1마리</button>
-          <button id="btn-count-10">10마리</button>
-          <button id="btn-count-50">50마리</button>
-          <button id="btn-count-100">100마리</button>
-        </div>
+
         <p><label><input type="checkbox" id="chk-debug"> 경로·충돌 영역 표시</label></p>
         
         <hr/>
         <div class="slider-group">
-          <p style="margin:0 0 5px 0; font-weight:bold;">카메라 및 드론 설정</p>
+          <p style="margin:0 0 5px 0; font-weight:bold;">카메라 설정</p>
           <label title="기본적으로 화면이 얼마나 확대/축소될지 결정합니다.">기본 확대 정도: <span id="val-cam-dist">1.0</span></label>
           <input type="range" id="sl-cam-dist" min="1.0" max="3.0" step="0.1" value="1.0">
           
@@ -76,16 +100,7 @@
 
           <label title="값이 높을수록 카메라가 군단을 더 빠르고 덜 부드럽게 쫓아갑니다.">카메라 추적 속도: <span id="val-cam-speed-follow">0.0</span></label>
           <input type="range" id="sl-cam-speed-follow" min="-100.0" max="100.0" step="1.0" value="0.0">
-          
-          <label title="WASD로 움직이는 드론의 비행 속도를 조절합니다.">드론 비행 속도: <span id="val-drone-speed">0.5</span></label>
-          <input type="range" id="sl-drone-speed" min="0.0" max="1.0" step="0.05" value="0.5">
-          
-          <label>드론 명령 범위: <span id="val-z-drone-radius">15.0</span></label>
-          <input type="range" id="sl-z-drone-radius" min="1.0" max="100.0" step="1.0" value="15.0">
-          
-          <label>범위 투명도: <span id="val-z-drone-opacity">15</span></label>
-          <input type="range" id="sl-z-drone-opacity" min="0" max="100" step="1" value="15">
-          
+
           <label style="display:flex; align-items:center; gap:5px;"><input type="checkbox" id="chk-cam-auto-zoom" checked> 자동 줌 켜기 (군단 산개 시)</label>
           <button id="btn-cam-reset" style="margin-top:5px; width:100%;">카메라 기본값 복원</button>
         </div>
@@ -123,62 +138,19 @@
         </details>
 
         <hr/>
-        <p><strong>스폰 설정</strong></p>
-        <div class="slider-group">
-          <label>초기 민간인 수: </label>
-          <input type="number" id="inp-civ-count" min="0" max="2000" step="1" value="1200" style="width: 100%; padding: 4px; box-sizing: border-box; background: #333; color: #fff; border: 1px solid #555;">
-          
-          <label>군인 분대원 수: </label>
-          <input type="number" id="inp-sol-count" min="0" max="50" step="1" value="12" style="width: 100%; padding: 4px; box-sizing: border-box; background: #333; color: #fff; border: 1px solid #555;">
-          
-          <label>군인 투입 주기(초): </label>
-          <input type="number" id="inp-sol-interval" min="1" max="120" step="1" value="20" style="width: 100%; padding: 4px; box-sizing: border-box; background: #333; color: #fff; border: 1px solid #555;">
+        <p><strong>시트 설정 동기화</strong></p>
+        <div id="sheet-status-container" style="background: #222; padding: 10px; margin-bottom: 10px; border-radius: 5px; border: 1px solid #444;">
+          <p id="sheet-status-text" style="margin: 0 0 5px 0; font-size: 13px; color: #aaa;">상태: 확인 중...</p>
+          <p id="sheet-source-text" style="margin: 0 0 5px 0; font-size: 11px; color: #888;">설정 출처: -</p>
+          <p id="sheet-id-text" style="margin: 0 0 5px 0; font-size: 11px; color: #888;">현재 적용된 식별값: -</p>
+          <p id="sheet-time-text" style="margin: 0 0 5px 0; font-size: 11px; color: #888;">마지막 정상 로드: 없음</p>
+          <p id="sheet-pending-text" style="margin: 0 0 10px 0; font-size: 12px; color: #ff9800; display: none;">⚠ 다음 재시작 시 새 설정 적용 대기 중</p>
+          <p id="sheet-error-text" style="margin: 0 0 10px 0; font-size: 11px; color: #f44336; display: none;"></p>
+          <div style="display: flex; gap: 5px;">
+            <button id="btn-sheet-refresh" style="flex: 1; padding: 5px;">시트 새로고침</button>
+            <button id="btn-sheet-open" style="flex: 1; padding: 5px;" onclick="window.open('https://docs.google.com/spreadsheets/d/1RDUPIp2l9H2diRB3f1PO9f1IGV9uFI5-U6wJqzB3jXc/edit', '_blank')">원본 시트 열기</button>
+          </div>
         </div>
-
-        <hr/>
-        <p><strong>스탯 설정</strong></p>
-        <details>
-          <summary>좀비 스탯</summary>
-          <div class="slider-group zombie-stats">
-            <label>최소 속도: <span id="val-z-spd-min">3.0</span></label><input type="range" id="sl-z-spd-min" min="1" max="30" step="0.5" value="3.0">
-            <label>최대 속도: <span id="val-z-spd-max">7.0</span></label><input type="range" id="sl-z-spd-max" min="1" max="30" step="0.5" value="7.0">
-            
-            <label>최소 체력: <span id="val-z-hp-min">50</span></label><input type="range" id="sl-z-hp-min" min="10" max="500" step="10" value="50">
-            <label>최대 체력: <span id="val-z-hp-max">150</span></label><input type="range" id="sl-z-hp-max" min="10" max="500" step="10" value="150">
-            
-            <label>최소 공격력: <span id="val-z-atk-min">10</span></label><input type="range" id="sl-z-atk-min" min="1" max="100" step="1" value="10">
-            <label>최대 공격력: <span id="val-z-atk-max">30</span></label><input type="range" id="sl-z-atk-max" min="1" max="100" step="1" value="30">
-            
-            <label>런지 감지 거리: <span id="val-z-lunge-dist">5.0</span></label><input type="range" id="sl-z-lunge-dist" min="1.0" max="30.0" step="1.0" value="5.0">
-            <label>런지 속도 배율: <span id="val-z-lunge-spd">3.0</span></label><input type="range" id="sl-z-lunge-spd" min="1.0" max="10.0" step="0.5" value="3.0">
-            <label>감염 필요 시간(초): <span id="val-z-infect-time">1.8</span></label><input type="range" id="sl-z-infect-time" min="0.1" max="10.0" step="0.1" value="1.8">
-          </div>
-        </details>
-
-        <details>
-          <summary>민간인 스탯</summary>
-          <div class="slider-group civilian-stats">
-            <label>최소 속도: <span id="val-c-spd-min">3.0</span></label><input type="range" id="sl-c-spd-min" min="1" max="30" step="0.5" value="3.0">
-            <label>최대 속도: <span id="val-c-spd-max">7.0</span></label><input type="range" id="sl-c-spd-max" min="1" max="30" step="0.5" value="7.0">
-            
-            <label>최소 체력: <span id="val-c-hp-min">20</span></label><input type="range" id="sl-c-hp-min" min="10" max="200" step="5" value="20">
-            <label>최대 체력: <span id="val-c-hp-max">50</span></label><input type="range" id="sl-c-hp-max" min="10" max="200" step="5" value="50">
-          </div>
-        </details>
-
-        <details>
-          <summary>군인 스탯</summary>
-          <div class="slider-group soldier-stats">
-            <label>최소 속도: <span id="val-s-spd-min">5.0</span></label><input type="range" id="sl-s-spd-min" min="1" max="30" step="0.5" value="5.0">
-            <label>최대 속도: <span id="val-s-spd-max">8.0</span></label><input type="range" id="sl-s-spd-max" min="1" max="30" step="0.5" value="8.0">
-            
-            <label>최소 체력: <span id="val-s-hp-min">100</span></label><input type="range" id="sl-s-hp-min" min="10" max="500" step="10" value="100">
-            <label>최대 체력: <span id="val-s-hp-max">200</span></label><input type="range" id="sl-s-hp-max" min="10" max="500" step="10" value="200">
-            
-            <label>최소 공격력: <span id="val-s-atk-min">20</span></label><input type="range" id="sl-s-atk-min" min="5" max="200" step="5" value="20">
-            <label>최대 공격력: <span id="val-s-atk-max">60</span></label><input type="range" id="sl-s-atk-max" min="5" max="200" step="5" value="60">
-          </div>
-        </details>
 
         <div id="stats" style="display:none;">
         </div>
@@ -187,10 +159,10 @@
     
     <script>
       const gameContainer = document.getElementById('game-container');
-      const flareUI = document.getElementById('flare-ui');
+      const actionBar = document.getElementById('action-bar');
       const minimapCont = document.getElementById('minimap-container');
-      if (flareUI && minimapCont && gameContainer) {
-        gameContainer.appendChild(flareUI);
+      if (actionBar && minimapCont && gameContainer) {
+        gameContainer.appendChild(actionBar);
         gameContainer.appendChild(minimapCont);
       }
     </script>

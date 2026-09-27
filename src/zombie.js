@@ -3,18 +3,24 @@ import { CONFIG } from './config.js';
 
 export class Zombie {
   constructor(scene, type, x, z) {
+    this.type = type;
+    const sheetId = type === 'normal' ? 'z_walker' : (type === 'fast' ? 'z_runner' : 'z_brute');
+    const unitStats = CONFIG.units && CONFIG.units[sheetId] ? CONFIG.units[sheetId] : {};
     const zStats = CONFIG.stats.zombie;
-    this.speed = zStats.speedMin + Math.random() * (zStats.speedMax - zStats.speedMin);
-    this.maxHp = Math.floor(zStats.hpMin + Math.random() * (zStats.hpMax - zStats.hpMin));
+
+    this.speed = unitStats.speed !== undefined ? unitStats.speed : (zStats.speedMin + Math.random() * (zStats.speedMax - zStats.speedMin));
+    this.maxHp = unitStats.hp !== undefined ? unitStats.hp : Math.floor(zStats.hpMin + Math.random() * (zStats.hpMax - zStats.hpMin));
     this.hp = this.maxHp;
-    this.attack = Math.floor(zStats.atkMin + Math.random() * (zStats.atkMax - zStats.atkMin));
+    this.attack = unitStats.attack !== undefined ? unitStats.attack : Math.floor(zStats.atkMin + Math.random() * (zStats.atkMax - zStats.atkMin));
+    this.infectTime = unitStats.infectTime !== undefined ? unitStats.infectTime : zStats.infectTime;
+    this.attackDist = unitStats.attack_dist !== undefined ? unitStats.attack_dist : 1.0;
+    this.colRadius = unitStats.col_radius !== undefined ? unitStats.col_radius : 0.5;
+    this.infectionChance = unitStats.infection_chance !== undefined ? unitStats.infection_chance : 1.0;
+    this.infectionBreakGraceS = unitStats.infection_break_grace_s !== undefined ? unitStats.infection_break_grace_s : 0.2;
     
-    const geometry = new THREE.CapsuleGeometry(CONFIG.zombieRadius, 1, 4, 8);
-    const material = new THREE.MeshLambertMaterial({ color: CONFIG.colors.zombie });
-    this.mesh = new THREE.Mesh(geometry, material);
+    this.mesh = new THREE.Object3D();
     this.mesh.position.set(x, 1, z);
-    this.mesh.castShadow = true;
-    scene.add(this.mesh);
+    this.entityType = 'zombie';
 
     this.velocity = new THREE.Vector3();
     this.path = [];
@@ -22,16 +28,23 @@ export class Zombie {
     this.scene = scene;
     
     this.lastInputDirection = new THREE.Vector3();
+    this.aiTargetTimer = Math.random() * 0.2;
+    this.pathTimer = Math.random() * 0.5;
+    this.closestTarget = null;
+    this.closestDistSq = Infinity;
   }
 
-  update(dt, droneCommand, dronePos, grid, allZombies, debug, humans = [], soldiers = []) {
+  update(dt, droneCommand, dronePos, grid, entityGrid, debug) {
     let pos = this.mesh.position.clone();
+    
+    // Find nearby entities
+    let nearby = entityGrid.findNearby(pos.x, pos.z, 2.0); // For separation
     
     // Separation force
     let sepForce = new THREE.Vector3();
     let count = 0;
-    for (let other of allZombies) {
-        if (other !== this) {
+    for (let other of nearby) {
+        if (other.entityType === 'zombie' && other !== this) {
             let distSq = pos.distanceToSquared(other.mesh.position);
             if (distSq < 2.0 && distSq > 0) {
                 let diff = pos.clone().sub(other.mesh.position);
@@ -49,13 +62,15 @@ export class Zombie {
     let lungeDistSq = CONFIG.stats.zombie.lungeDist * CONFIG.stats.zombie.lungeDist;
     if (this.currentTarget) {
         let stillValid = false;
-        if (humans.includes(this.currentTarget) && !this.currentTarget.isTransforming) stillValid = true;
-        if (soldiers.includes(this.currentTarget) && this.currentTarget.hp > 0) stillValid = true;
-        
-        if (stillValid) {
-            let d = pos.distanceToSquared(this.currentTarget.mesh.position);
-            if (d > lungeDistSq * 1.5) {
-                stillValid = false;
+        if (this.currentTarget) {
+            if (this.currentTarget.entityType === 'human' && !this.currentTarget.isTransforming) stillValid = true;
+            if (this.currentTarget.entityType === 'soldier' && this.currentTarget.hp > 0) stillValid = true;
+            
+            if (stillValid) {
+                let d = pos.distanceToSquared(this.currentTarget.mesh.position);
+                if (d > lungeDistSq * 1.5) {
+                    stillValid = false;
+                }
             }
         }
         
@@ -66,27 +81,37 @@ export class Zombie {
     }
 
     // 2. Find closest target for biting/auto-attack
-    let closestTarget = null;
-    let closestDistSq = Infinity;
-    
-    if (this.currentTarget && this.currentTarget.targetedBy === this) {
-        closestTarget = this.currentTarget;
-        closestDistSq = pos.distanceToSquared(this.currentTarget.mesh.position);
-    } else {
-        for (let h of humans) {
-            if (h.isTransforming) continue;
-            if (h.targetedBy && h.targetedBy !== this) continue;
-            let d = pos.distanceToSquared(h.mesh.position);
-            if (d < closestDistSq) { closestDistSq = d; closestTarget = h; }
+    this.aiTargetTimer -= dt;
+    if (this.aiTargetTimer <= 0) {
+        this.aiTargetTimer = 0.2 + Math.random() * 0.2;
+        this.closestTarget = null;
+        this.closestDistSq = Infinity;
+        
+        if (this.currentTarget && this.currentTarget.targetedBy === this) {
+            this.closestTarget = this.currentTarget;
+            this.closestDistSq = pos.distanceToSquared(this.currentTarget.mesh.position);
+        } else {
+            let nearbyTargets = entityGrid.findNearby(pos.x, pos.z, 30.0); // Sight range
+            for (let other of nearbyTargets) {
+                if (other.entityType === 'human') {
+                    if (other.isTransforming) continue;
+                    if (other.targetedBy && other.targetedBy !== this) continue;
+                    let d = pos.distanceToSquared(other.mesh.position);
+                    if (d < this.closestDistSq) { this.closestDistSq = d; this.closestTarget = other; }
+                } else if (other.entityType === 'soldier') {
+                    if (other.targetedBy && other.targetedBy !== this) continue;
+                    let d = pos.distanceToSquared(other.mesh.position);
+                    if (d < this.closestDistSq) { this.closestDistSq = d; this.closestTarget = other; }
+                }
+            }
         }
-        for (let s of soldiers) {
-            if (s.targetedBy && s.targetedBy !== this) continue;
-            let d = pos.distanceToSquared(s.mesh.position);
-            if (d < closestDistSq) { closestDistSq = d; closestTarget = s; }
-        }
+    } else if (this.closestTarget) {
+        this.closestDistSq = pos.distanceToSquared(this.closestTarget.mesh.position);
     }
 
-    let isBiting = (closestTarget && closestDistSq < 2.25);
+    let targetColRadius = this.closestTarget ? (this.closestTarget.colRadius || 0.5) : 0.5;
+    let biteDist = targetColRadius + this.colRadius + 0.2;
+    let isBiting = (this.closestTarget && this.closestDistSq <= biteDist * biteDist);
     
     // Priorities
     // 1. Stop
@@ -94,7 +119,7 @@ export class Zombie {
         this.path = [];
         this.updateDebugLine(false);
         if (isBiting) {
-            let lookTarget = closestTarget.mesh.position.clone();
+            let lookTarget = this.closestTarget.mesh.position.clone();
             lookTarget.y = this.mesh.position.y;
             this.mesh.lookAt(lookTarget);
         }
@@ -104,9 +129,29 @@ export class Zombie {
         return; // Early return for STOP
     }
 
+    if (droneCommand.type === 'SCATTER' && dronePos) {
+        this.path = [];
+        this.updateDebugLine(false);
+        if (this.currentTarget && this.currentTarget.targetedBy === this) {
+            this.currentTarget.targetedBy = null;
+        }
+        this.currentTarget = null;
+        
+        let diff = pos.clone().sub(dronePos);
+        diff.y = 0;
+        if (diff.lengthSq() > 0) {
+            diff.normalize();
+        } else {
+            diff.set(Math.random() - 0.5, 0, Math.random() - 0.5).normalize();
+        }
+        let moveDir = diff.clone().add(sepForce).normalize();
+        this.move(moveDir, dt, grid, false);
+        return;
+    }
+
     if (isBiting) {
         // Stop moving, face the target (still applying separation lightly)
-        let lookTarget = closestTarget.mesh.position.clone();
+        let lookTarget = this.closestTarget.mesh.position.clone();
         lookTarget.y = this.mesh.position.y;
         this.mesh.lookAt(lookTarget);
         this.updateDebugLine(false);
@@ -130,11 +175,11 @@ export class Zombie {
     } else {
         // 3. Drone Influence Range or Auto-Attack
         let droneRadSq = (droneCommand && droneCommand.type === 'FLARE_ACTIVE') ? Infinity : (CONFIG.stats.zombie.droneRadius * CONFIG.stats.zombie.droneRadius);
-        if (closestTarget && closestDistSq < lungeDistSq) {
-            targetPos = closestTarget.mesh.position.clone();
+        if (this.closestTarget && this.closestDistSq < lungeDistSq) {
+            targetPos = this.closestTarget.mesh.position.clone();
             isLunging = true;
-            this.currentTarget = closestTarget;
-            closestTarget.targetedBy = this;
+            this.currentTarget = this.closestTarget;
+            this.closestTarget.targetedBy = this;
         } else {
             if (this.currentTarget && this.currentTarget.targetedBy === this) {
                 this.currentTarget.targetedBy = null;
@@ -182,8 +227,12 @@ export class Zombie {
             this.move(dirToTarget, dt, grid, isLunging);
         }
     } else {
+        this.pathTimer -= dt;
         if (targetPos && !grid.isLineOfSightClear(pos, targetPos)) {
-            this.path = grid.findPath(pos, targetPos);
+            if (this.pathTimer <= 0) {
+                this.path = grid.findPath(pos, targetPos);
+                this.pathTimer = 0.5 + Math.random() * 0.5; // Throttle A* pathfinding
+            }
         }
         
         if (this.path.length === 0) {
@@ -254,9 +303,6 @@ export class Zombie {
     if (this.currentTarget && this.currentTarget.targetedBy === this) {
         this.currentTarget.targetedBy = null;
     }
-    this.scene.remove(this.mesh);
-    this.mesh.geometry.dispose();
-    this.mesh.material.dispose();
     this.updateDebugLine(false);
   }
 }

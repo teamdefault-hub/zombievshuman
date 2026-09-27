@@ -4,44 +4,97 @@ import { soundManager } from './soundManager.js';
 
 export class Soldier {
   constructor(scene, x, z) {
+    const unitStats = CONFIG.units && CONFIG.units['s_rifleman'] ? CONFIG.units['s_rifleman'] : {};
     const s = CONFIG.stats.soldier;
-    this.speed = s.speedMin + Math.random() * (s.speedMax - s.speedMin);
-    this.maxHp = Math.floor(s.hpMin + Math.random() * (s.hpMax - s.hpMin));
-    this.hp = this.maxHp;
-    this.attack = Math.floor(s.atkMin + Math.random() * (s.atkMax - s.atkMin));
+
+    this.speed = unitStats.speed !== undefined ? unitStats.speed : (s.speedMin + Math.random() * (s.speedMax - s.speedMin));
+    this.maxHp = unitStats.hp !== undefined ? unitStats.hp : Math.floor(s.hpMin + Math.random() * (s.hpMax - s.hpMin));
     
-    const geometry = new THREE.CapsuleGeometry(CONFIG.zombieRadius, 1, 4, 8);
-    const material = new THREE.MeshLambertMaterial({ color: CONFIG.colors.soldier });
-    this.mesh = new THREE.Mesh(geometry, material);
+    this.hp = this.maxHp;
+    this.maxStamina = unitStats.max_stamina !== undefined ? unitStats.max_stamina : 100;
+    this.stamina = this.maxStamina;
+    this.isExhausted = false;
+    this.staminaRegen = unitStats.stamina_regen_per_s !== undefined ? unitStats.stamina_regen_per_s : 5;
+    this.moveDrain = unitStats.move_stamina_drain_per_s !== undefined ? unitStats.move_stamina_drain_per_s : 0;
+    this.sprintDrain = unitStats.sprint_stamina_drain_per_s !== undefined ? unitStats.sprint_stamina_drain_per_s : 10;
+    this.exhaustMinS = unitStats.exhausted_rest_min_s !== undefined ? unitStats.exhausted_rest_min_s : 3;
+    this.exhaustTimer = 0;
+    this.resumeRatio = unitStats.stamina_resume_ratio !== undefined ? unitStats.stamina_resume_ratio : 0.5;
+    this.safeRearmS = unitStats.sprint_rearm_safe_s !== undefined ? unitStats.sprint_rearm_safe_s : 2;
+    this.safeTimer = 0;
+    this.lastHitTimer = 0;
+
+    this.attack = unitStats.attack !== undefined ? unitStats.attack : Math.floor(s.atkMin + Math.random() * (s.atkMax - s.atkMin));
+    this.colRadius = unitStats.col_radius !== undefined ? unitStats.col_radius : 0.5;
+    this.infectResist = unitStats.infect_resist !== undefined ? unitStats.infect_resist : 0.0;
+    this.canTargetAir = unitStats.can_target_air === true || unitStats.can_target_air === 1;
+    
+    this.mesh = new THREE.Object3D();
     this.mesh.position.set(x, 1, z);
-    this.mesh.castShadow = true;
-    scene.add(this.mesh);
+    this.entityType = 'soldier';
 
     this.scene = scene;
     this.path = [];
     this.wanderTimer = 0;
     this.shootTimer = 0;
-    this.shootCooldown = 0.5; // Shoot every 0.5s
-    this.attackRangeSq = 400; // 20 units
+    this.shootCooldown = unitStats.attack_speed !== undefined ? unitStats.attack_speed : (s.atkCooldown !== undefined ? s.atkCooldown : 0.5);
+    this.attackRange = unitStats.attack_dist !== undefined ? unitStats.attack_dist : 20.0;
+    this.attackRangeSq = this.attackRange * this.attackRange;
     
     this.bullets = []; 
   }
 
-  update(dt, grid, zombies, allSoldiers) {
+  update(dt, grid, entityGrid, playerDrone = null) {
+    
     let pos = this.mesh.position.clone();
     
-    // Find nearest zombie in line of sight
+    this.lastHitTimer += dt;
+    if (this.isExhausted) {
+        this.exhaustTimer += dt;
+    }
+    
+    let isSafe = this.lastHitTimer >= this.safeRearmS && this.state !== 'flee' && this.state !== 'attack';
+    if (isSafe && !this.isMoving) {
+        this.stamina += this.staminaRegen * dt;
+        if (this.stamina > this.maxStamina) this.stamina = this.maxStamina;
+    }
+
+    if (this.isExhausted && this.exhaustTimer >= this.exhaustMinS && (this.stamina / this.maxStamina) >= this.resumeRatio) {
+        this.isExhausted = false;
+    }
+
+    
     let targetZombie = null;
     let minTargetDistSq = Infinity;
     
-    for (let z of zombies) {
-        let distSq = pos.distanceToSquared(z.mesh.position);
+    // Check if we can target air (drone)
+    if (this.canTargetAir && playerDrone && playerDrone.hp > 0 && CONFIG.drone) {
+        let h = CONFIG.drone.flight_height !== undefined ? CONFIG.drone.flight_height : 10;
+        let dx = pos.x - playerDrone.mesh.position.x;
+        let dz = pos.z - playerDrone.mesh.position.z;
+        let distSq = dx*dx + h*h + dz*dz; // 3D distance
+        
         if (distSq < this.attackRangeSq) {
-            // Check LOS
-            if (grid.isLineOfSightClear(pos, z.mesh.position)) {
-                if (distSq < minTargetDistSq) {
-                    minTargetDistSq = distSq;
-                    targetZombie = z;
+            let drone3DPos = playerDrone.mesh.position.clone();
+            drone3DPos.y = h;
+            if (grid.isLineOfSightClear(pos, drone3DPos)) {
+                minTargetDistSq = distSq;
+                targetZombie = playerDrone; // Treat drone as target
+            }
+        }
+    }
+    
+    let nearby = entityGrid.findNearby(pos.x, pos.z, this.attackRange); 
+    
+    for (let z of nearby) {
+        if (z.entityType === 'zombie') {
+            let distSq = pos.distanceToSquared(z.mesh.position);
+            if (distSq < this.attackRangeSq) {
+                if (grid.isLineOfSightClear(pos, z.mesh.position)) {
+                    if (distSq < minTargetDistSq) {
+                        minTargetDistSq = distSq;
+                        targetZombie = z;
+                    }
                 }
             }
         }
@@ -50,8 +103,9 @@ export class Soldier {
     // Separation
     let sepForce = new THREE.Vector3();
     let count = 0;
-    for (let other of allSoldiers) {
-        if (other !== this) {
+    let nearbySoldiers = entityGrid.findNearby(pos.x, pos.z, 2.0);
+    for (let other of nearbySoldiers) {
+        if (other.entityType === 'soldier' && other !== this) {
             let distSq = pos.distanceToSquared(other.mesh.position);
             if (distSq < 2.0 && distSq > 0) {
                 let diff = pos.clone().sub(other.mesh.position);
@@ -131,16 +185,30 @@ export class Soldier {
     }
   }
   
-  shoot(zombie) {
-      zombie.hp -= this.attack;
+  shoot(target) {
+      if (target.hp !== undefined) {
+          let damage = this.attack;
+          if (target === window.playerDrone || target.constructor.name === 'Drone') {
+              if (CONFIG.drone && CONFIG.drone.damage_reduction) {
+                  damage *= (1.0 - CONFIG.drone.damage_reduction);
+              }
+              target.regenTimer = 0;
+          }
+          target.hp -= damage;
+      }
       soundManager.playGunshot();
-      if (zombie.mesh && zombie.mesh.material) {
-          let orig = zombie.origEmissive || zombie.mesh.material.emissive.getHex();
-          zombie.origEmissive = orig;
-          zombie.mesh.material.emissive.setHex(0xffffff);
-          if (zombie.flashTimer) clearTimeout(zombie.flashTimer);
-          zombie.flashTimer = setTimeout(() => {
-              if (zombie.mesh && zombie.mesh.material) zombie.mesh.material.emissive.setHex(orig);
+      
+      target.isHit = true;
+      if (target.mesh && target.mesh.material) {
+          if (target.flashTimer) clearTimeout(target.flashTimer);
+          target.flashTimer = setTimeout(() => {
+              target.isHit = false;
+          }, 100);
+      } else {
+          // Fallback if no single material (e.g. Drone)
+          if (target.flashTimer) clearTimeout(target.flashTimer);
+          target.flashTimer = setTimeout(() => {
+              target.isHit = false;
           }, 100);
       }
       
@@ -154,8 +222,14 @@ export class Soldier {
       const points = [];
       const startPos = this.mesh.position.clone();
       startPos.y += 0.5; // Shoot from chest height
-      const endPos = zombie.mesh.position.clone();
-      endPos.y += 0.5;
+      
+      const endPos = target.mesh.position.clone();
+      // If drone, shoot at its height, otherwise chest height
+      if (target === window.playerDrone || target.constructor.name === 'Drone') {
+          endPos.y = (CONFIG.drone && CONFIG.drone.flight_height !== undefined) ? CONFIG.drone.flight_height : 10;
+      } else {
+          endPos.y += 0.5;
+      }
       
       points.push(startPos);
       points.push(endPos);
@@ -164,7 +238,7 @@ export class Soldier {
       const line = new THREE.Line(geometry, material);
       this.scene.add(line);
       
-      this.bullets.push({ line: line, life: 0.1 }); 
+      this.bullets.push({ line: line, life: 0.1 });  
   }
 
   move(dir, dt, grid) {
@@ -190,8 +264,6 @@ export class Soldier {
   }
 
   destroy() {
-    this.mesh.geometry.dispose();
-    this.mesh.material.dispose();
     this.scene.remove(this.mesh);
     this.bullets.forEach(b => {
         this.scene.remove(b.line);
