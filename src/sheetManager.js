@@ -240,6 +240,10 @@ export class SheetManager {
                 continue;
             }
             
+            if (/[가-힣]/.test(keyStr) || keyStr.length > 30) {
+                continue;
+            }
+            
             if (!/^[a-zA-Z0-9_]+$/.test(keyStr)) {
                 throw new Error(`[${sheetName}] Row ${rowIndex} error (${keyStr}): Invalid key format. Must be alphanumeric and underscore.`);
             }
@@ -264,7 +268,16 @@ export class SheetManager {
         for (let row of data) {
             const uid = row['unit_id'];
             const key = row['stat_key'];
-            if (!uid || !key || uid.includes(' ') || key.includes(' ')) continue;
+            if (!uid || !key) continue;
+            const uidStr = String(uid).trim();
+            const keyStr = String(key).trim();
+            
+            if (/[가-힣]/.test(uidStr) || /[가-힣]/.test(keyStr) || uidStr.length > 30 || keyStr.length > 30) {
+                continue;
+            }
+            if (!/^[a-zA-Z0-9_]+$/.test(uidStr) || !/^[a-zA-Z0-9_]+$/.test(keyStr)) {
+                throw new Error(`[Abilities] Row error (${uidStr}_${keyStr}): Invalid unit_id or stat_key format.`);
+            }
             
             try {
                 const type = row['유형'] || 'string';
@@ -286,7 +299,15 @@ export class SheetManager {
         const parsed = {};
         for (let row of data) {
             const oid = row['obstacle_id'];
-            if (!oid || oid.includes(' ')) continue;
+            if (!oid) continue;
+            
+            const oidStr = String(oid).trim();
+            if (/[가-힣]/.test(oidStr) || oidStr.length > 30) {
+                continue;
+            }
+            if (!/^[a-zA-Z0-9_]+$/.test(oidStr)) {
+                throw new Error(`[Obstacles] Row error (${oidStr}): Invalid obstacle_id format.`);
+            }
             
             try {
                 if (row['hp'] === '') throw new Error(`Missing HP for ${oid}`);
