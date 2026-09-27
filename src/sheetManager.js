@@ -164,7 +164,7 @@ export class SheetManager {
                 const staminaEnabled = unitAbilities['stamina_enabled'];
                 
                 if (sheetName === 'Zombie' && rawStamina === '') {
-                     if (String(staminaEnabled) !== '0') {
+                     if (staminaEnabled && String(staminaEnabled) !== '0' && String(staminaEnabled).trim() !== '') {
                          throw new Error(`max_stamina is missing but abilities.stamina_enabled is not 0`);
                      }
                 }
