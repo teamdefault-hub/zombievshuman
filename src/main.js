@@ -217,7 +217,8 @@ function getValidSpawnPointWithLOS(px, pz, radius, maxDist, gridObj) {
         for (let a = 0; a < Math.PI * 2; a += (Math.PI * 2) / angleSteps) {
             let tx = px + Math.cos(a) * r;
             let tz = pz + Math.sin(a) * r;
-            if (!gridObj.checkCollision(tx, tz, radius)) {
+            let { gx, gz } = gridObj.worldToGrid(tx, tz);
+            if (gridObj.isWalkable(gx, gz)) {
                 if (r === 0 || gridObj.isLineOfSightClear(new THREE.Vector3(px, 0, pz), new THREE.Vector3(tx, 0, tz))) {
                     return {x: tx, z: tz};
                 }
@@ -898,7 +899,22 @@ function animate() {
                 }
             }
             
-            if (!h.infectorZombie && !h.isTransforming && !h.infectionPending) {
+            if (h.infectionBlocked) {
+                let anyNear = false;
+                for(let z of zombies) {
+                    let dzCol = z.colRadius || 0.5;
+                    let distSq = (targetCol + dzCol + 0.2) * (targetCol + dzCol + 0.2);
+                    if (z.hp > 0 && z.mesh.position.distanceToSquared(h.mesh.position) <= distSq) {
+                        anyNear = true;
+                        break;
+                    }
+                }
+                if (!anyNear) {
+                    h.infectionBlocked = false;
+                }
+            }
+            
+            if (!h.infectorZombie && !h.isTransforming && !h.infectionPending && !h.infectionBlocked) {
                 for(let z of zombies) {
                     let dzCol = z.colRadius || 0.5;
                     let distSq = (targetCol + dzCol + 0.2) * (targetCol + dzCol + 0.2);
