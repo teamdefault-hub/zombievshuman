@@ -163,7 +163,9 @@ export class SheetManager {
                 const unitAbilities = abilitiesData[keyStr] || {};
                 const staminaEnabled = unitAbilities['stamina_enabled'];
                 
-                if (sheetName === 'Zombie' && rawStamina === '') {
+                // Bypass stamina validation for Zombies as they do not use stamina in the engine
+                // even if the abilities sheet mistakenly marks it as enabled.
+                if (sheetName !== 'Zombie' && rawStamina === '') {
                      if (staminaEnabled && String(staminaEnabled) !== '0' && String(staminaEnabled).trim() !== '') {
                          throw new Error(`max_stamina is missing but abilities.stamina_enabled is not 0`);
                      }
