@@ -153,6 +153,11 @@ export class SheetManager {
                 continue;
             }
             
+            // If the ID contains Korean characters or is a long sentence, it is clearly an explanation note, not a typoed data row.
+            if (/[가-힣]/.test(keyStr) || keyStr.length > 30) {
+                continue;
+            }
+            
             if (!/^[a-zA-Z0-9_]+$/.test(keyStr)) {
                 throw new Error(`[${sheetName}] Row ${rowIndex} error (${keyStr}): Invalid unit_id format. Must be alphanumeric and underscore.`);
             }
